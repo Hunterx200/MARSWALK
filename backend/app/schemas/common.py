@@ -1,6 +1,6 @@
 """Common Pydantic models for MARSWALK backend."""
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ErrorDetail(BaseModel):
@@ -14,9 +14,29 @@ class ErrorEnvelope(BaseModel):
 
 
 class GeoCoordinate(BaseModel):
-    """Mars geographic coordinates in degrees."""
-    longitude: float = Field(..., description="Mars geographic longitude in degrees (-180 to 180 or 0 to 360)")
-    latitude: float = Field(..., description="Mars geographic latitude in degrees (-90 to 90)")
+    """Mars geographic coordinates in degrees (supports both longitude/latitude and lon/lat)."""
+    longitude: float = Field(default=0.0, description="Mars geographic longitude in degrees")
+    latitude: float = Field(default=0.0, description="Mars geographic latitude in degrees")
+    lon: Optional[float] = None
+    lat: Optional[float] = None
+    name: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_coords(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            # Map lon -> longitude
+            if "lon" in data and "longitude" not in data:
+                data["longitude"] = data["lon"]
+            elif "longitude" in data and "lon" not in data:
+                data["lon"] = data["longitude"]
+
+            # Map lat -> latitude
+            if "lat" in data and "latitude" not in data:
+                data["latitude"] = data["lat"]
+            elif "latitude" in data and "lat" not in data:
+                data["lat"] = data["latitude"]
+        return data
 
 
 class BoundingBox(BaseModel):

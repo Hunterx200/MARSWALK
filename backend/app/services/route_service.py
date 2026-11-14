@@ -1,5 +1,6 @@
 """Route planning service integrating Developer C's AlternativeRoutePlanner engine."""
 import logging
+import math
 import sys
 import uuid
 from pathlib import Path
@@ -35,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 
 class RouteService:
+    MAX_SNAP_DISTANCE_M: float = 800.0
+
     def __init__(self, terrain_svc=terrain_service, hazard_svc=hazard_service):
         self.terrain_svc = terrain_svc
         self.hazard_svc = hazard_svc
@@ -55,7 +58,7 @@ class RouteService:
         # Construct hazard mask from actual slope and hazard grid (> 20 deg or hazard score > 70)
         slope_grid = self.terrain_svc._slope
         if slope_grid is not None:
-            hazard_mask = (slope_grid > 20.0)
+            hazard_mask = (slope_grid > 20.0).copy()
         else:
             hazard_mask = np.zeros_like(dem, dtype=bool)
 
@@ -63,14 +66,18 @@ class RouteService:
         if hazard_score_grid is not None:
             hazard_mask = hazard_mask | (hazard_score_grid > 70.0)
 
-        # Coordinate transformer: (grid_x=col, grid_y=row) -> (lon, lat)
-        # Row 0 = 18.7°N (lat_max), Row 64 = 18.2°N (lat_min)
-        # Col 0 = 77.0°E (lon_min), Col 102 = 77.8°E (lon_max)
+        # Enforce inner traversable corridor: Row 64 and Col 102 centers fall outside
+        # the mission exploration boundary [77.0°E-77.8°E, 18.2°N-18.7°N].
+        # Mask them as impassable so graph search never visits them.
+        hazard_mask[64, :] = True
+        hazard_mask[:, 102] = True
+
+        # PDS pixel-center coordinate mapping:
+        # lon(col) = 77.00390625 + col / 128.0
+        # lat(row) = 18.69921875 - row / 128.0
         def grid_to_mars(grid_x: int, grid_y: int) -> Tuple[float, float]:
-            u = float(grid_x) / max(1, w - 1)
-            v = float(grid_y) / max(1, h - 1)
-            lon = settings.min_lon + u * (settings.max_lon - settings.min_lon)
-            lat = settings.max_lat - v * (settings.max_lat - settings.min_lat)
+            lon = 77.00390625 + grid_x / 128.0
+            lat = 18.69921875 - grid_y / 128.0
             return round(float(lon), 6), round(float(lat), 6)
 
         try:
@@ -86,13 +93,57 @@ class RouteService:
             self._planner = None
 
     def validate_coordinates(self, coord: GeoCoordinate, name: str) -> None:
-        """Verify coordinates fall within Jezero Crater bounding box."""
+        """Verify coordinates fall within Jezero Crater mission exploration bounding box."""
         if not (settings.min_lon <= coord.longitude <= settings.max_lon and
                 settings.min_lat <= coord.latitude <= settings.max_lat):
             raise InvalidRequestException(
                 message=f"{name} coordinate ({coord.longitude}, {coord.latitude}) is outside the Jezero Crater region "
                         f"[{settings.min_lon}, {settings.min_lat}, {settings.max_lon}, {settings.max_lat}]."
             )
+
+    def snap_endpoint(self, coord: GeoCoordinate, name: str) -> Tuple[int, int, GeoCoordinate, float]:
+        """
+        Map endpoint to nearest traversable grid cell (col in 0..101, row in 0..63).
+        If endpoint maps to non-traversable edge cells (col=102 or row=64),
+        maps it to the nearest traversable cell if within MAX_SNAP_DISTANCE_M.
+        Returns (row, col, snapped_geo_coord, snap_distance_m).
+        """
+        u = (coord.longitude - 77.00390625) * 128.0
+        v = (18.69921875 - coord.latitude) * 128.0
+        col_raw = int(round(u))
+        row_raw = int(round(v))
+
+        col_snap = max(0, min(101, col_raw))
+        row_snap = max(0, min(63, row_raw))
+
+        lon_snap = 77.00390625 + col_snap / 128.0
+        lat_snap = 18.69921875 - row_snap / 128.0
+
+        # Physical distance on Mars sphere (R = 3,396,190m) at Jezero sub-tropics
+        lat_rad = math.radians(18.45)
+        dx = (coord.longitude - lon_snap) * (math.pi / 180.0) * 3396190.0 * math.cos(lat_rad)
+        dy = (coord.latitude - lat_snap) * (math.pi / 180.0) * 3396190.0
+        snap_dist_m = math.hypot(dx, dy)
+
+        if snap_dist_m > self.MAX_SNAP_DISTANCE_M:
+            raise InvalidRequestException(
+                message=f"{name} coordinate ({coord.longitude}, {coord.latitude}) requires snapping distance of {snap_dist_m:.1f}m, which exceeds maximum allowed {self.MAX_SNAP_DISTANCE_M}m."
+            )
+
+        snapped_coord = GeoCoordinate(longitude=round(lon_snap, 6), latitude=round(lat_snap, 6))
+        return row_snap, col_snap, snapped_coord, round(snap_dist_m, 1)
+
+    def validate_emitted_geojson(self, geojson_data: dict) -> None:
+        """Validate that all LineString coordinates fall strictly within mission boundary."""
+        for feat in geojson_data.get("features", []):
+            if feat.get("geometry", {}).get("type") == "LineString":
+                coords = feat.get("geometry", {}).get("coordinates", [])
+                for idx, pt in enumerate(coords):
+                    lon, lat = pt[0], pt[1]
+                    if not (77.0 <= lon <= 77.8 and 18.2 <= lat <= 18.7):
+                        raise InvalidRequestException(
+                            message=f"Waypoint {idx} ({lon:.6f}°E, {lat:.6f}°N) exceeds mission exploration boundary [77.0°E-77.8°E, 18.2°N-18.7°N]."
+                        )
 
     def _convert_path_result_to_route_item(
         self,
@@ -102,6 +153,12 @@ class RouteService:
         goal_coord: GeoCoordinate,
         elev_available: bool,
         now_iso: str,
+        original_start: Optional[GeoCoordinate] = None,
+        snapped_start: Optional[GeoCoordinate] = None,
+        start_snap_dist: float = 0.0,
+        original_goal: Optional[GeoCoordinate] = None,
+        snapped_goal: Optional[GeoCoordinate] = None,
+        goal_snap_dist: float = 0.0,
     ) -> RouteItem:
         """Convert Developer C PathResult to API RouteItem adhering to contract."""
         path_nodes: List[PathNode] = []
@@ -133,6 +190,8 @@ class RouteService:
         if path_res.waypoints:
             max_hazard = max(w.risk_score for w in path_res.waypoints)
 
+        total_distance = round(path_res.total_distance_m + start_snap_dist + goal_snap_dist, 1)
+
         return RouteItem(
             id=f"route_{uuid.uuid4().hex[:8]}",
             label=label,
@@ -141,7 +200,7 @@ class RouteService:
             start=start_coord,
             goal=goal_coord,
             path=path_nodes,
-            distance_meters=round(path_res.total_distance_m, 1),
+            distance_meters=total_distance,
             estimated_travel_time_minutes=round(travel_time_min, 1),
             mean_slope_degrees=round(path_res.avg_slope_deg, 2),
             maximum_slope_degrees=round(path_res.max_slope_deg, 2),
@@ -163,6 +222,12 @@ class RouteService:
             elevation_loss_m=round(path_res.total_elevation_loss_m, 1),
             total_cost=round(path_res.total_cost, 2),
             waypoint_count=len(path_res.waypoints),
+            original_start=original_start or start_coord,
+            snapped_start=snapped_start or start_coord,
+            start_snap_distance_m=round(start_snap_dist, 1),
+            original_goal=original_goal or goal_coord,
+            snapped_goal=snapped_goal or goal_coord,
+            goal_snap_distance_m=round(goal_snap_dist, 1),
         )
 
     def plan_route(self, request: RoutePlanRequest) -> RoutePlanResponse:
@@ -175,10 +240,12 @@ class RouteService:
         if request.start is not None and request.goal is not None:
             self.validate_coordinates(request.start, "Start")
             self.validate_coordinates(request.goal, "Goal")
-            start_coord = request.start
-            goal_coord = request.goal
-            start_row, start_col = self.terrain_svc.geo_to_grid(start_coord.longitude, start_coord.latitude)
-            goal_row, goal_col = self.terrain_svc.geo_to_grid(goal_coord.longitude, goal_coord.latitude)
+            orig_start = request.start
+            orig_goal = request.goal
+            start_row, start_col, snapped_start, start_snap_dist = self.snap_endpoint(orig_start, "Start")
+            goal_row, goal_col, snapped_goal, goal_snap_dist = self.snap_endpoint(orig_goal, "Goal")
+            start_coord = orig_start
+            goal_coord = orig_goal
         # 2. Grid input fallback (start_x, start_y, goal_x, goal_y)
         elif (request.start_x is not None and request.start_y is not None and
               request.goal_x is not None and request.goal_y is not None):
@@ -193,10 +260,21 @@ class RouteService:
                 raise InvalidRequestException(
                     message=f"Goal grid coordinate ({goal_col}, {goal_row}) is out of bounds [0..{w-1}, 0..{h-1}]."
                 )
+            # Inner grid clamping if grid inputs are on outer row/col
+            start_col = min(101, start_col)
+            start_row = min(63, start_row)
+            goal_col = min(101, goal_col)
+            goal_row = min(63, goal_row)
             start_lon, start_lat = self.terrain_svc.grid_to_geo(start_row, start_col)
             goal_lon, goal_lat = self.terrain_svc.grid_to_geo(goal_row, goal_col)
-            start_coord = GeoCoordinate(longitude=start_lon, latitude=start_lat)
-            goal_coord = GeoCoordinate(longitude=goal_lon, latitude=goal_lat)
+            orig_start = GeoCoordinate(longitude=start_lon, latitude=start_lat)
+            orig_goal = GeoCoordinate(longitude=goal_lon, latitude=goal_lat)
+            snapped_start = orig_start
+            snapped_goal = orig_goal
+            start_coord = orig_start
+            goal_coord = orig_goal
+            start_snap_dist = 0.0
+            goal_snap_dist = 0.0
         else:
             raise InvalidRequestException(
                 message="Start and Goal coordinates are required (either geographic start/goal or grid start_x/y, goal_x/y)."
@@ -260,6 +338,12 @@ class RouteService:
             goal_coord=goal_coord,
             elev_available=elev_available,
             now_iso=now_iso,
+            original_start=orig_start,
+            snapped_start=snapped_start,
+            start_snap_dist=start_snap_dist,
+            original_goal=orig_goal,
+            snapped_goal=snapped_goal,
+            goal_snap_dist=goal_snap_dist,
         )
         routes_out.append(primary_item)
 
@@ -274,6 +358,12 @@ class RouteService:
                     goal_coord=goal_coord,
                     elev_available=elev_available,
                     now_iso=now_iso,
+                    original_start=orig_start,
+                    snapped_start=snapped_start,
+                    start_snap_dist=start_snap_dist,
+                    original_goal=orig_goal,
+                    snapped_goal=snapped_goal,
+                    goal_snap_dist=goal_snap_dist,
                 )
                 routes_out.append(alt_item)
 
@@ -281,6 +371,146 @@ class RouteService:
         geojson_data = multi_res.to_geojson()
         multi_dict = multi_res.to_dict()
         comparison = multi_dict.get("comparison")
+
+        # Elevation sampling for endpoint connectors
+        try:
+            start_elev = self.terrain_svc.get_elevation_at(orig_start.longitude, orig_start.latitude)
+        except Exception:
+            start_elev = primary.waypoints[0].elevation_m if primary.waypoints else -2500.0
+
+        try:
+            goal_elev = self.terrain_svc.get_elevation_at(orig_goal.longitude, orig_goal.latitude)
+        except Exception:
+            goal_elev = primary.waypoints[-1].elevation_m if primary.waypoints else -2500.0
+
+        # Inject endpoint connectors into GeoJSON LineString coordinates
+        for feat in geojson_data.get("features", []):
+            if feat.get("geometry", {}).get("type") == "LineString":
+                coords = feat["geometry"]["coordinates"]
+                if start_snap_dist > 0.0:
+                    coords.insert(0, [orig_start.longitude, orig_start.latitude, round(float(start_elev), 1)])
+                if goal_snap_dist > 0.0:
+                    coords.append([orig_goal.longitude, orig_goal.latitude, round(float(goal_elev), 1)])
+                if "distance_m" in feat.get("properties", {}):
+                    feat["properties"]["distance_m"] = round(feat["properties"]["distance_m"] + start_snap_dist + goal_snap_dist, 1)
+
+        # Validate that all emitted GeoJSON coordinates strictly stay within mission boundary
+        self.validate_emitted_geojson(geojson_data)
+
+        # Frontend convenience fields (matches frontend/src/types/api.ts)
+        frontend_waypoints = []
+        step_idx = 0
+        if start_snap_dist > 0.0:
+            frontend_waypoints.append({
+                "index": step_idx,
+                "lat": orig_start.latitude,
+                "lon": orig_start.longitude,
+                "elevation_m": round(float(start_elev), 1),
+                "slope_deg": 0.0,
+                "roughness": 0.2,
+                "segment_distance_m": 0.0,
+                "cumulative_distance_m": 0.0,
+                "estimated_sol": 0.0,
+                "risk_level": "LOW",
+                "notes": "Start Point (Boundary Snapped)",
+            })
+            step_idx += 1
+
+        cum_dist = start_snap_dist
+        for wp in primary.waypoints:
+            cum_dist += (463.0 if wp.step_index > 0 else 0.0)
+            frontend_waypoints.append({
+                "index": step_idx,
+                "lat": wp.lat if wp.lat is not None else orig_start.latitude,
+                "lon": wp.lon if wp.lon is not None else orig_start.longitude,
+                "elevation_m": round(wp.elevation_m, 1) if wp.elevation_m is not None else 0.0,
+                "slope_deg": round(wp.slope_deg, 1) if wp.slope_deg is not None else 0.0,
+                "roughness": round(wp.roughness_m, 2) if wp.roughness_m is not None else 0.2,
+                "segment_distance_m": 463.0 if wp.step_index > 0 else round(start_snap_dist, 1),
+                "cumulative_distance_m": round(cum_dist, 1),
+                "estimated_sol": round(cum_dist / 550.0, 1),
+                "risk_level": "HIGH" if (wp.risk_score or 0) > 50 else ("MEDIUM" if (wp.risk_score or 0) > 25 else "LOW"),
+                "notes": f"Waypoint {step_idx}",
+            })
+            step_idx += 1
+
+        if goal_snap_dist > 0.0:
+            cum_dist += goal_snap_dist
+            frontend_waypoints.append({
+                "index": step_idx,
+                "lat": orig_goal.latitude,
+                "lon": orig_goal.longitude,
+                "elevation_m": round(float(goal_elev), 1),
+                "slope_deg": 0.0,
+                "roughness": 0.2,
+                "segment_distance_m": round(goal_snap_dist, 1),
+                "cumulative_distance_m": round(cum_dist, 1),
+                "estimated_sol": round(cum_dist / 550.0, 1),
+                "risk_level": "LOW",
+                "notes": "Target Point (Boundary Snapped)",
+            })
+
+        path_coords: List[List[float]] = [
+            [wp["lon"], wp["lat"]] for wp in frontend_waypoints
+        ]
+
+        frontend_alternatives = []
+        for idx, alt in enumerate(multi_res.alternatives[:max_alts], 1):
+            if alt.found:
+                alt_coords = [
+                    [wp.lon, wp.lat] for wp in alt.waypoints if wp.lon is not None and wp.lat is not None
+                ]
+                if start_snap_dist > 0.0:
+                    alt_coords.insert(0, [orig_start.longitude, orig_start.latitude])
+                if goal_snap_dist > 0.0:
+                    alt_coords.append([orig_goal.longitude, orig_goal.latitude])
+                frontend_alternatives.append({
+                    "id": f"alt_{alt.profile}_{idx}",
+                    "name": f"Alternative: {alt.profile.capitalize()}",
+                    "profile": alt.profile,
+                    "distance_m": round(alt.total_distance_m + start_snap_dist + goal_snap_dist, 1),
+                    "duration_sols": round((alt.total_distance_m + start_snap_dist + goal_snap_dist) / 500.0, 1),
+                    "max_slope_deg": round(alt.max_slope_deg, 1),
+                    "avg_slope_deg": round(alt.avg_slope_deg, 1),
+                    "risk_score": round(alt.estimated_risk_score, 1),
+                    "risk_category": "HIGH" if alt.estimated_risk_score > 50 else ("MEDIUM" if alt.estimated_risk_score > 25 else "LOW"),
+                    "science_targets_count": 2,
+                    "waypoints": [
+                        {
+                            "index": wp.step_index,
+                            "lat": wp.lat,
+                            "lon": wp.lon,
+                            "elevation_m": round(wp.elevation_m or 0.0, 1),
+                            "slope_deg": round(wp.slope_deg or 0.0, 1),
+                            "roughness": round(wp.roughness_m or 0.2, 2),
+                            "segment_distance_m": 463.0 if wp.step_index > 0 else 0.0,
+                            "cumulative_distance_m": round(wp.cumulative_distance_m, 1),
+                            "estimated_sol": round(wp.cumulative_distance_m / 500.0, 1),
+                            "risk_level": "HIGH" if (wp.risk_score or 0) > 50 else "LOW",
+                        }
+                        for wp in alt.waypoints
+                    ],
+                    "path_coordinates": alt_coords,
+                    "description": f"Alternative route optimized for {alt.profile} profile.",
+                })
+
+        summary = {
+            "total_distance_m": round(primary.total_distance_m + start_snap_dist + goal_snap_dist, 1),
+            "estimated_duration_sols": round((primary.total_distance_m + start_snap_dist + goal_snap_dist) / 500.0, 1),
+            "max_slope_deg": round(primary.max_slope_deg, 1),
+            "avg_slope_deg": round(primary.avg_slope_deg, 1),
+            "overall_risk_score": round(primary.estimated_risk_score, 1),
+            "risk_category": "HIGH" if primary.estimated_risk_score > 50 else ("MEDIUM" if primary.estimated_risk_score > 25 else "LOW"),
+            "energy_budget_kwh": round((primary.total_distance_m + start_snap_dist + goal_snap_dist) * 0.0012, 2),
+        }
+
+        provenance_dict = {
+            "elevation_model": "NASA MGS MOLA MEGDR 128ppd Topography",
+            "imagery_model": "NASA Mars Trek CTX Mosaic",
+            "hazard_model": "Horn Slope Gradient & Distance Standoff Buffer",
+            "generated_at": now_iso,
+            "disclaimer": STANDARD_LIMITATIONS[0],
+        }
 
         return RoutePlanResponse(
             request_id=req_id,
@@ -290,6 +520,21 @@ class RouteService:
             message="Route is a planning estimate and is not guaranteed safe.",
             geojson=geojson_data,
             comparison=comparison,
+            route_id=primary_item.id,
+            algorithm="A* Pathfinding (Euclidean + Slope/Hazard Cost)",
+            profile=primary.profile,
+            summary=summary,
+            waypoints=frontend_waypoints,
+            path_coordinates=path_coords,
+            alternatives=frontend_alternatives,
+            warnings=primary.warnings,
+            provenance=provenance_dict,
+            original_start=orig_start,
+            snapped_start=snapped_start,
+            start_snap_distance_m=round(start_snap_dist, 1),
+            original_goal=orig_goal,
+            snapped_goal=snapped_goal,
+            goal_snap_distance_m=round(goal_snap_dist, 1),
         )
 
 

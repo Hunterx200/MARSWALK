@@ -159,6 +159,10 @@ class NasaTrekService:
                         source_url=defn["source_url"],
                         coverage=defn["coverage"],
                         limitations=defn["limitations"],
+                        description=f"Verified NASA Mars Trek WMTS layer: {defn['name']}",
+                        visible=True,
+                        opacity=1.0,
+                        verified_nasa_source=True,
                     )
                 )
             else:
@@ -175,6 +179,10 @@ class NasaTrekService:
                         limitations=defn["limitations"] + [
                             "WMTS GetCapabilities validation was unreachable or failed. Layer is offline."
                         ],
+                        description=f"Unverified or offline NASA Mars Trek layer: {defn['name']}",
+                        visible=False,
+                        opacity=0.0,
+                        verified_nasa_source=False,
                     )
                 )
         return layers_out

@@ -21,23 +21,45 @@ class RoutePlanRequest(BaseModel):
     goal: Optional[GeoCoordinate] = None
     options: Optional[RouteOptions] = Field(default_factory=RouteOptions)
     
-    # Optional direct grid coordinates for algorithm testing
+    # Frontend convenience fields (matches frontend/src/types/api.ts)
+    profile: Optional[str] = None
+    max_slope_deg: Optional[float] = None
+    avoid_sand_dunes: Optional[bool] = None
+    rover_model: Optional[str] = None
+
+    # Algorithm test fields
     start_x: Optional[int] = None
     start_y: Optional[int] = None
     goal_x: Optional[int] = None
     goal_y: Optional[int] = None
-    profile: Optional[str] = None
     allow_diagonal: Optional[bool] = None
 
     @model_validator(mode="before")
     @classmethod
     def validate_inputs(cls, data: Any) -> Any:
         if isinstance(data, dict):
-            opts = data.get("options") or {}
+            opts = dict(data.get("options") or {})
+            
+            # Map frontend profile
             if "profile" in data and "profile" not in opts:
-                opts["profile"] = data["profile"]
+                prof = data["profile"].lower()
+                if prof == "safest":
+                    prof = "safe"
+                elif prof == "fastest":
+                    prof = "direct"
+                opts["profile"] = prof
+                
+            # Map max_slope_deg -> max_slope_degrees
+            if "max_slope_deg" in data and "max_slope_degrees" not in opts:
+                opts["max_slope_degrees"] = float(data["max_slope_deg"])
+                
+            # Map avoid_sand_dunes -> avoid_hazards
+            if "avoid_sand_dunes" in data and "avoid_hazards" not in opts:
+                opts["avoid_hazards"] = bool(data["avoid_sand_dunes"])
+                
             if "allow_diagonal" in data and "allow_diagonal" not in opts:
                 opts["allow_diagonal"] = data["allow_diagonal"]
+                
             data["options"] = opts
         return data
 
@@ -83,9 +105,16 @@ class RouteItem(BaseModel):
     elevation_loss_m: Optional[float] = None
     total_cost: Optional[float] = None
     waypoint_count: Optional[int] = None
+    original_start: Optional[GeoCoordinate] = None
+    snapped_start: Optional[GeoCoordinate] = None
+    start_snap_distance_m: Optional[float] = 0.0
+    original_goal: Optional[GeoCoordinate] = None
+    snapped_goal: Optional[GeoCoordinate] = None
+    goal_snap_distance_m: Optional[float] = 0.0
 
 
 class RoutePlanResponse(BaseModel):
+    # Core API contract (Developer B / API_CONTRACT.md)
     request_id: str
     region_id: str
     status: Literal["success", "partial", "failed"]
@@ -93,3 +122,20 @@ class RoutePlanResponse(BaseModel):
     message: str = "Route is a planning estimate and is not guaranteed safe."
     geojson: Optional[Dict[str, Any]] = None
     comparison: Optional[List[Dict[str, Any]]] = None
+
+    # Frontend convenience properties (frontend/src/types/api.ts)
+    original_start: Optional[GeoCoordinate] = None
+    snapped_start: Optional[GeoCoordinate] = None
+    start_snap_distance_m: Optional[float] = 0.0
+    original_goal: Optional[GeoCoordinate] = None
+    snapped_goal: Optional[GeoCoordinate] = None
+    goal_snap_distance_m: Optional[float] = 0.0
+    route_id: Optional[str] = None
+    algorithm: Optional[str] = None
+    profile: Optional[str] = None
+    summary: Optional[Dict[str, Any]] = None
+    waypoints: Optional[List[Dict[str, Any]]] = None
+    path_coordinates: Optional[List[List[float]]] = None
+    alternatives: Optional[List[Dict[str, Any]]] = None
+    warnings: Optional[List[str]] = None
+    provenance: Optional[Dict[str, Any]] = None

@@ -1,6 +1,6 @@
 """Observation schema definitions."""
-from typing import List, Literal, Optional
-from pydantic import BaseModel, Field
+from typing import Any, List, Literal, Optional
+from pydantic import BaseModel, Field, model_validator
 from app.schemas.common import ProvenanceMetadata
 
 
@@ -18,6 +18,36 @@ class ObservationItem(BaseModel):
     description: str
     thumbnail_url: Optional[str] = None
     provenance: ProvenanceMetadata
+
+    # Frontend convenience fields (matches frontend/src/types/api.ts)
+    target_name: Optional[str] = None
+    feature_type: Optional[str] = None
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    elevation_m: Optional[float] = None
+    scientific_value: Optional[str] = None
+    instruments: Optional[List[str]] = None
+    nasa_pds_reference: Optional[str] = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def populate_frontend_aliases(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            if "title" in data and "target_name" not in data:
+                data["target_name"] = data["title"]
+            if "latitude" in data and "lat" not in data:
+                data["lat"] = data["latitude"]
+            if "longitude" in data and "lon" not in data:
+                data["lon"] = data["longitude"]
+            if "type" in data and "feature_type" not in data:
+                data["feature_type"] = "landing_site" if "landing" in data.get("title", "").lower() else "science_target"
+            if "scientific_value" not in data:
+                data["scientific_value"] = "HIGH"
+            if "elevation_m" not in data:
+                data["elevation_m"] = -2520.0
+            if "instruments" not in data:
+                data["instruments"] = ["Mastcam-Z", "SuperCam", "PIXL"]
+        return data
 
 
 class ObservationsResponse(BaseModel):

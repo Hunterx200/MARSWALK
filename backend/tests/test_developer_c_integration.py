@@ -16,8 +16,8 @@ def test_backend_uses_developer_c_planner_instance():
     # Verify actual NASA MOLA DEM (65x103), NOT a synthetic benchmark grid (80x80 or 100x100)
     dem = route_service._planner.dem
     assert dem.shape == (65, 103)
-    assert dem.min() < -1000  # Jezero floor is around -1127m
-    assert dem.max() > 1000   # Jezero rim reaches +1145m
+    assert dem.min() < -2000  # Jezero floor reaches around -2719m
+    assert dem.max() < -1000  # Jezero rim reaches around -1537m
     assert route_service._planner.resolution_m == 463.0
     assert route_service._planner.hazard_mask.shape == (65, 103)
     assert route_service._planner.hazard_mask.sum() > 0

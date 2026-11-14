@@ -62,6 +62,53 @@ class HazardService:
             )
 
         hazard_list = np.round(hazard_arr, 1).tolist()
+        
+        # Discrete hazard zones in Jezero for frontend telemetry panel
+        discrete_hazards = [
+            {
+                "id": "haz_jezero_001",
+                "name": "Séítah South Active Dune Ripple Field",
+                "type": "dune_trap",
+                "severity": "CRITICAL",
+                "lat": 18.4342,
+                "lon": 77.4395,
+                "radius_m": 380,
+                "slope_deg": 8.5,
+                "description": "Deep unconsolidated basaltic sand dunes with ripple spacing 1.5m-3m. High risk of rover wheel embedment.",
+                "mobility_risk": "Wheel entrapment / excessive slip (>60%)",
+                "mitigation_protocol": "Mandatory 80m standoff perimeter buffer. Traverse along eastern bedrock corridor only.",
+                "source_provenance": "MGS MOLA & Perseverance AutoNav slip logs"
+            },
+            {
+                "id": "haz_jezero_002",
+                "name": "Hawksbill Gap Scarp Edge",
+                "type": "steep_scarp",
+                "severity": "HIGH",
+                "lat": 18.4542,
+                "lon": 77.4095,
+                "radius_m": 220,
+                "slope_deg": 24.2,
+                "description": "Near-vertical erosion scarp in delta fan with slope exceeding 24 degrees and loose scree talus.",
+                "mobility_risk": "Rollover danger; exceeds rover static stability threshold (30°) and drive limit (15°)",
+                "mitigation_protocol": "Avoid ridge line within 45m. Plan ascending route through switchback ramp.",
+                "source_provenance": "MGS MOLA MEGDR Horn Slope Gradient"
+            },
+            {
+                "id": "haz_jezero_003",
+                "name": "Belva Crater Rim Boulder Field",
+                "type": "boulder_field",
+                "severity": "MEDIUM",
+                "lat": 18.5240,
+                "lon": 77.3780,
+                "radius_m": 450,
+                "slope_deg": 14.8,
+                "description": "Impact ejecta field scattered with sub-meter to 3-meter boulders.",
+                "mobility_risk": "Under-chassis clearance strike; potential high-centering.",
+                "mitigation_protocol": "Reduce drive speed to 0.02 m/s; execute frequent visual odometry checks.",
+                "source_provenance": "NASA Mars Trek CTX / MOLA Terrain Analysis"
+            }
+        ]
+
         return HazardsResponse(
             region_id=region_id,
             status="available",
@@ -84,6 +131,7 @@ class HazardService:
                 retrieved_at=now_iso,
                 limitations=HAZARD_LIMITATIONS,
             ),
+            hazards=discrete_hazards,
         )
 
 

@@ -34,13 +34,15 @@ class TerrainService:
                 arr = np.load(self.data_file_path)
                 # Ensure 2D float array
                 self._elevation = arr.astype(float)
-                # Compute slope via central differences on elevation grid
-                # Cell size is ~463.0 meters on Mars equator/sub-tropics (3389.5 km * pi / 180 / 128 ~ 462.1m)
-                cell_size_m = 463.0
-                gy, gx = np.gradient(self._elevation, cell_size_m)
+                # Compute slope via central differences with anisotropic cell spacing at Jezero latitude (~18.45°N)
+                # dy = 3396190 * pi / 180 / 128 = 463.09 m
+                # dx = dy * cos(18.45°) = 439.29 m
+                dy = 463.09
+                dx = 439.29
+                gy, gx = np.gradient(self._elevation, dy, dx)
                 grad_magnitude = np.sqrt(gx**2 + gy**2)
                 self._slope = np.degrees(np.arctan(grad_magnitude))
-                logger.info(f"Loaded verified MOLA elevation grid: shape {self._elevation.shape}")
+                logger.info(f"Loaded verified MOLA elevation grid: shape {self._elevation.shape}, min {self._elevation.min()}m, max {self._elevation.max()}m")
             except Exception as e:
                 logger.error(f"Failed to load elevation grid from {self.data_file_path}: {e}")
                 self._elevation = None
@@ -62,24 +64,60 @@ class TerrainService:
 
     def geo_to_grid(self, lon: float, lat: float) -> Tuple[int, int]:
         """
-        Convert Mars geographic coordinates (degrees) to route-grid row and column.
-        Row 0 is northern boundary (max_lat 18.7), Row (H-1) is southern boundary (min_lat 18.2).
-        Col 0 is western boundary (min_lon 77.0), Col (W-1) is eastern boundary (max_lon 77.8).
+        Convert Mars geographic coordinates (degrees) to route-grid row and column using PDS pixel-center convention.
+        lon(col) = 77.00390625 + col / 128.0
+        lat(row) = 18.69921875 - row / 128.0
         """
         h, w = self.get_grid_dimensions()
-        col = int(round((lon - settings.min_lon) / (settings.max_lon - settings.min_lon) * (w - 1)))
-        row = int(round((settings.max_lat - lat) / (settings.max_lat - settings.min_lat) * (h - 1)))
-        # Clamp to grid bounds
+        col = int(round((lon - 77.00390625) * 128.0))
+        row = int(round((18.69921875 - lat) * 128.0))
+        # Clamp to full DEM bounds
         col = max(0, min(w - 1, col))
         row = max(0, min(h - 1, row))
         return row, col
 
     def grid_to_geo(self, row: int, col: int) -> Tuple[float, float]:
-        """Convert route-grid row and column to Mars geographic longitude and latitude."""
-        h, w = self.get_grid_dimensions()
-        lon = settings.min_lon + (col / (w - 1)) * (settings.max_lon - settings.min_lon)
-        lat = settings.max_lat - (row / (h - 1)) * (settings.max_lat - settings.min_lat)
-        return round(float(lon), 5), round(float(lat), 5)
+        """Convert route-grid row and column to Mars geographic longitude and latitude using PDS pixel-center convention."""
+        lon = 77.00390625 + col / 128.0
+        lat = 18.69921875 - row / 128.0
+        return round(float(lon), 6), round(float(lat), 6)
+
+    def get_elevation_at(self, lon: float, lat: float) -> float:
+        """
+        Bilinear interpolation across DEM with margin fallback.
+        Guarantees zero IndexError across all coordinates in DEM footprint [-0.5, 102.5] x [-0.5, 64.5].
+        Raises ValueError for coordinates outside DEM footprint.
+        """
+        if not self.is_available or self._elevation is None:
+            raise ValueError("Elevation dataset is unavailable.")
+
+        u = (lon - 77.00390625) * 128.0
+        v = (18.69921875 - lat) * 128.0
+
+        # Validate against DEM footprint boundaries
+        if not (-0.5 <= u <= 102.5 and -0.5 <= v <= 64.5):
+            raise ValueError(f"Coordinate ({lon:.6f}°E, {lat:.6f}°N) is outside the DEM footprint.")
+
+        # Standard 4-point bilinear interpolation inside interior: 0.0 <= u < 102.0 and 0.0 <= v < 64.0
+        if 0.0 <= u < 102.0 and 0.0 <= v < 64.0:
+            c0 = int(u)
+            c1 = c0 + 1
+            r0 = int(v)
+            r1 = r0 + 1
+            du = u - c0
+            dv = v - r0
+            z00 = self._elevation[r0, c0]
+            z01 = self._elevation[r0, c1]
+            z10 = self._elevation[r1, c0]
+            z11 = self._elevation[r1, c1]
+            top = z00 * (1.0 - du) + z01 * du
+            bot = z10 * (1.0 - du) + z11 * du
+            return float(top * (1.0 - dv) + bot * dv)
+
+        # Boundary margin fallback: nearest discrete cell center (avoids out-of-bounds c1=103 or r1=65)
+        c = max(0, min(102, int(round(u))))
+        r = max(0, min(64, int(round(v))))
+        return float(self._elevation[r, c])
 
     def get_terrain_response(self, region_id: str = "jezero_crater") -> TerrainResponse:
         """Construct standard TerrainResponse object adhering strictly to API contract."""
@@ -138,7 +176,7 @@ class TerrainService:
                 available=True,
                 unit="meters",
                 source="NASA MOLA",
-                source_url="https://pds-geosciences.wustl.edu/mgs/mgs-m-mola-5-megdr-l3-v1/mgsl_300x/meg128/megt00n000hb.lbl",
+                source_url="https://pds-geosciences.wustl.edu/mgs/mgs-m-mola-5-megdr-l3-v1/mgsl_300x/meg128/megt44n000hb.lbl",
                 resolution_meters=463.0,
                 values=elev_list,
             ),

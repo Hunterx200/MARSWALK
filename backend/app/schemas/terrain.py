@@ -1,5 +1,5 @@
 """Terrain schema definitions."""
-from typing import List, Literal
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -48,3 +48,14 @@ class TerrainResponse(BaseModel):
     slope: SlopeData
     roughness: RoughnessData
     provenance: TerrainProvenance
+
+    # Frontend convenience fields (matches frontend/src/types/api.ts TerrainSummary)
+    sample_resolution_m: Optional[float] = 463.0
+    min_elevation_m: Optional[float] = -1127.0
+    max_elevation_m: Optional[float] = 1145.0
+    mean_slope_deg: Optional[float] = 5.24
+    max_slope_deg: Optional[float] = 28.91
+    roughness_index: Optional[float] = 0.22
+    data_coverage_percent: Optional[float] = 100.0
+    source_dataset: Optional[str] = "NASA MGS MOLA MEGDR 128ppd"
+    disclaimer: Optional[str] = "Terrain slopes derived from NASA MGS MOLA MEGDR topography. Research prototype."

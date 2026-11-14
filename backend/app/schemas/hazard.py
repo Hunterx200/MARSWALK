@@ -1,5 +1,5 @@
 """Hazard schema definitions."""
-from typing import List, Literal
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -29,3 +29,6 @@ class HazardsResponse(BaseModel):
     hazard_score: HazardScoreData
     hazard_types: List[HazardType] = Field(default_factory=list)
     provenance: HazardProvenance
+
+    # Frontend convenience list (matches frontend/src/types/api.ts HazardZone[])
+    hazards: Optional[List[Dict[str, Any]]] = Field(default_factory=list)
