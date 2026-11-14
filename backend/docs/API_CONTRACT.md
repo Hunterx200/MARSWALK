@@ -493,10 +493,15 @@ Returns the saved mission or `404 Not Found` if the mission ID does not exist.
 ---
 
 ## 5. Developer C (Algorithms) Integration Notes
-1. **Internal Fallback vs Engine Replacement:**
-   - The backend currently provides an internal 8-directional A* fallback so the API is immediately testable and functional.
-   - When Developer C's algorithm module (`algorithms/`) is ready, Developer B will import `algorithms` into `route_service.py` to seamlessly delegate graph search while preserving this exact API contract.
+1. **Engine Integration Status:**
+   - Developer C's `AlternativeRoutePlanner` (`algorithms.routing.alternatives`) is **fully integrated** into `route_service.py`.
+   - The route planner uses the actual NASA MOLA MEGDR DEM grid (`65 × 103` at `463.0 m` resolution) and slope/hazard buffers, NOT synthetic benchmark data.
+   - All three routing profiles are supported: `balanced` (default), `direct` (shortest distance), and `safe` (maximum hazard standoff).
 2. **Stable Grid Metadata:**
    - Height: 65 rows, Width: 103 columns.
    - Cell Size: 463.0 meters.
-   - Origin: `lon = 77.0`, `lat = 18.2`.
+   - Row 0 corresponds to latitude 18.7°N; Row 64 corresponds to latitude 18.2°N.
+   - Column 0 corresponds to longitude 77.0°E; Column 102 corresponds to longitude 77.8°E.
+3. **GeoJSON & Multi-Route Outputs:**
+   - Responses include full OpenLayers-ready `geojson` FeatureCollection containing both route LineStrings and key turn/waypoint Points.
+   - Comparative profile trade-offs are included in `comparison`.

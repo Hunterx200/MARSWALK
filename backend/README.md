@@ -102,6 +102,6 @@ API Documentation is available interactively at:
 
 ### Developer C (Algorithms)
 - **Grid Dimensions:** 65 rows × 103 columns covering Jezero Crater `[77.0, 18.2, 77.8, 18.7]`.
-- **Topography:** Call `GET /api/terrain` for the 2D elevation and slope arrays.
-- **Hazards:** Call `GET /api/hazards` for the 0-100 composite risk matrix.
-- **Path Engine Integration:** When Developer C's algorithm module is ready in `algorithms/`, Developer B will replace the internal A* fallback in `route_service.py` with Developer C's solver.
+- **Topography:** Backed by authentic MGS MOLA MEGDR elevation data (`463.0 m` resolution).
+- **Hazards:** Real elevation gradients drive the hazard mask and standoff proximity grid.
+- **Engine Integration:** Fully integrated with Developer C's `AlternativeRoutePlanner` across `direct`, `balanced`, and `safe` profiles, emitting GeoJSON features and comparison metrics.

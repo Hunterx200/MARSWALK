@@ -1,9 +1,19 @@
-"""Route planning service implementing A* pathfinding on Mars terrain grid."""
-import math
-import heapq
+"""Route planning service integrating Developer C's AlternativeRoutePlanner engine."""
+import logging
+import sys
 import uuid
-from typing import List, Tuple, Optional, Dict
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+
 import numpy as np
+
+# Ensure MARSWALK root is on sys.path so 'algorithms' can be imported anywhere
+root_dir = str(Path(__file__).resolve().parent.parent.parent.parent)
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
+from algorithms.models import RouteProfile, PathResult, Waypoint, MultiRouteResult
+from algorithms.routing.alternatives import AlternativeRoutePlanner
 
 from app.config import settings
 from app.core.errors import InvalidRequestException
@@ -21,15 +31,61 @@ from app.schemas.route import (
 from app.services.terrain_service import terrain_service
 from app.services.hazard_service import hazard_service
 
-ROVER_SPEED_METERS_PER_SEC = 0.045  # ~162 m/hour nominal exploration traverse
+logger = logging.getLogger(__name__)
 
 
 class RouteService:
     def __init__(self, terrain_svc=terrain_service, hazard_svc=hazard_service):
         self.terrain_svc = terrain_svc
         self.hazard_svc = hazard_svc
+        self._planner: Optional[AlternativeRoutePlanner] = None
+        self._init_planner()
 
-    def validate_coordinates(self, coord: GeoCoordinate, name: str):
+    def _init_planner(self) -> None:
+        """Initialize Developer C's AlternativeRoutePlanner with real NASA MOLA DEM and hazards."""
+        if not self.terrain_svc.is_available or self.terrain_svc._elevation is None:
+            logger.warning("Terrain service elevation is not available; planner cannot be initialized.")
+            self._planner = None
+            return
+
+        dem = self.terrain_svc._elevation
+        h, w = dem.shape
+        resolution_m = 463.0
+
+        # Construct hazard mask from actual slope and hazard grid (> 20 deg or hazard score > 70)
+        slope_grid = self.terrain_svc._slope
+        if slope_grid is not None:
+            hazard_mask = (slope_grid > 20.0)
+        else:
+            hazard_mask = np.zeros_like(dem, dtype=bool)
+
+        hazard_score_grid = self.hazard_svc.get_hazard_score_grid()
+        if hazard_score_grid is not None:
+            hazard_mask = hazard_mask | (hazard_score_grid > 70.0)
+
+        # Coordinate transformer: (grid_x=col, grid_y=row) -> (lon, lat)
+        # Row 0 = 18.7°N (lat_max), Row 64 = 18.2°N (lat_min)
+        # Col 0 = 77.0°E (lon_min), Col 102 = 77.8°E (lon_max)
+        def grid_to_mars(grid_x: int, grid_y: int) -> Tuple[float, float]:
+            u = float(grid_x) / max(1, w - 1)
+            v = float(grid_y) / max(1, h - 1)
+            lon = settings.min_lon + u * (settings.max_lon - settings.min_lon)
+            lat = settings.max_lat - v * (settings.max_lat - settings.min_lat)
+            return round(float(lon), 6), round(float(lat), 6)
+
+        try:
+            self._planner = AlternativeRoutePlanner(
+                dem=dem,
+                hazard_mask=hazard_mask,
+                resolution_m=resolution_m,
+                coord_transformer=grid_to_mars,
+            )
+            logger.info(f"Initialized Developer C AlternativeRoutePlanner with DEM shape {dem.shape} and {hazard_mask.sum()} hazard cells.")
+        except Exception as e:
+            logger.error(f"Failed to initialize AlternativeRoutePlanner: {e}")
+            self._planner = None
+
+    def validate_coordinates(self, coord: GeoCoordinate, name: str) -> None:
         """Verify coordinates fall within Jezero Crater bounding box."""
         if not (settings.min_lon <= coord.longitude <= settings.max_lon and
                 settings.min_lat <= coord.latitude <= settings.max_lat):
@@ -38,256 +94,193 @@ class RouteService:
                         f"[{settings.min_lon}, {settings.min_lat}, {settings.max_lon}, {settings.max_lat}]."
             )
 
-    def _haversine_meters(self, lon1: float, lat1: float, lon2: float, lat2: float) -> float:
-        """Compute surface distance on Mars in meters (Mars mean radius = 3389.5 km)."""
-        r_mars = 3389500.0
-        phi1 = math.radians(lat1)
-        phi2 = math.radians(lat2)
-        delta_phi = math.radians(lat2 - lat1)
-        delta_lambda = math.radians(lon2 - lon1)
-
-        a = math.sin(delta_phi / 2.0)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2.0)**2
-        c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
-        return r_mars * c
-
-    def _run_astar(
+    def _convert_path_result_to_route_item(
         self,
-        start_rc: Tuple[int, int],
-        goal_rc: Tuple[int, int],
-        options: RouteOptions,
-        slope_grid: Optional[np.ndarray],
-        hazard_grid: Optional[np.ndarray],
-    ) -> Optional[List[Tuple[int, int]]]:
-        """A* search on grid graph with 8-connectivity."""
-        h, w = self.terrain_svc.get_grid_dimensions()
-        start_r, start_c = start_rc
-        goal_r, goal_c = goal_rc
-
-        if (start_r, start_c) == (goal_r, goal_c):
-            return [(start_r, start_c)]
-
-        cell_size = 463.0  # meters per grid cell
-        open_set = []
-        heapq.heappush(open_set, (0.0, 0.0, start_r, start_c))
-
-        came_from: Dict[Tuple[int, int], Tuple[int, int]] = {}
-        g_score = { (start_r, start_c): 0.0 }
-
-        # 8 directions: (dr, dc, base_dist)
-        neighbors = [
-            (-1, 0, cell_size),
-            (1, 0, cell_size),
-            (0, -1, cell_size),
-            (0, 1, cell_size),
-            (-1, -1, cell_size * 1.4142),
-            (-1, 1, cell_size * 1.4142),
-            (1, -1, cell_size * 1.4142),
-            (1, 1, cell_size * 1.4142),
-        ]
-
-        def heuristic(r: int, c: int) -> float:
-            dr = r - goal_r
-            dc = c - goal_c
-            return math.sqrt(dr * dr + dc * dc) * cell_size
-
-        while open_set:
-            _, current_g, curr_r, curr_c = heapq.heappop(open_set)
-
-            if (curr_r, curr_c) == (goal_r, goal_c):
-                # Reconstruct path
-                path = [(curr_r, curr_c)]
-                curr = (curr_r, curr_c)
-                while curr in came_from:
-                    curr = came_from[curr]
-                    path.append(curr)
-                path.reverse()
-                return path
-
-            if current_g > g_score.get((curr_r, curr_c), float('inf')):
-                continue
-
-            for dr, dc, step_dist in neighbors:
-                nr, nc = curr_r + dr, curr_c + dc
-                if 0 <= nr < h and 0 <= nc < w:
-                    # Evaluate cost
-                    cell_slope = 0.0
-                    cell_hazard = 0.0
-                    if slope_grid is not None:
-                        cell_slope = float(slope_grid[nr, nc])
-                    if hazard_grid is not None:
-                        cell_hazard = float(hazard_grid[nr, nc])
-
-                    # Slope constraint
-                    if cell_slope > options.max_slope_degrees:
-                        if options.avoid_hazards:
-                            # Severe penalty or impassable
-                            continue
-                        else:
-                            slope_multiplier = 5.0
-                    else:
-                        slope_multiplier = 1.0 + options.slope_weight * ((cell_slope / max(options.max_slope_degrees, 1.0)) ** 2)
-
-                    hazard_multiplier = 1.0
-                    if options.avoid_hazards and hazard_grid is not None:
-                        hazard_multiplier = 1.0 + options.hazard_weight * (cell_hazard / 100.0)
-
-                    step_cost = step_dist * options.distance_weight * slope_multiplier * hazard_multiplier
-                    tentative_g = current_g + step_cost
-
-                    if tentative_g < g_score.get((nr, nc), float('inf')):
-                        came_from[(nr, nc)] = (curr_r, curr_c)
-                        g_score[(nr, nc)] = tentative_g
-                        f_score = tentative_g + heuristic(nr, nc)
-                        heapq.heappush(open_set, (f_score, tentative_g, nr, nc))
-
-        return None
-
-    def plan_route(self, request: RoutePlanRequest) -> RoutePlanResponse:
-        """Execute route planning according to requested options."""
-        now_iso = get_current_utc_iso()
-        req_id = f"route_req_{uuid.uuid4().hex[:12]}"
-
-        # Validate coordinate boundaries
-        self.validate_coordinates(request.start, "Start")
-        self.validate_coordinates(request.goal, "Goal")
-
-        # Map geographic coordinates to terrain grid
-        start_row, start_col = self.terrain_svc.geo_to_grid(request.start.longitude, request.start.latitude)
-        goal_row, goal_col = self.terrain_svc.geo_to_grid(request.goal.longitude, request.goal.latitude)
-
-        elev_available = self.terrain_svc.is_available
-        slope_grid = self.terrain_svc._slope if elev_available else None
-        hazard_grid = self.hazard_svc.get_hazard_score_grid() if elev_available else None
-
-        opts = request.options or RouteOptions()
-        route_variants = [
-            ("Primary route", opts),
-        ]
-
-        # Generate alternatives by adjusting weights as requested in contract rules
-        if opts.alternatives >= 1:
-            alt1_opts = RouteOptions(
-                max_slope_degrees=max(5.0, opts.max_slope_degrees - 5.0),
-                avoid_hazards=True,
-                hazard_weight=0.5,
-                slope_weight=0.6,
-                distance_weight=0.2,
-                alternatives=0
-            )
-            route_variants.append(("Alternative route 1 (Conservative / Minimum Slope)", alt1_opts))
-
-        if opts.alternatives >= 2:
-            alt2_opts = RouteOptions(
-                max_slope_degrees=min(40.0, opts.max_slope_degrees + 5.0),
-                avoid_hazards=opts.avoid_hazards,
-                hazard_weight=0.2,
-                slope_weight=0.2,
-                distance_weight=0.7,
-                alternatives=0
-            )
-            route_variants.append(("Alternative route 2 (Direct Traverse)", alt2_opts))
-
-        routes_out: List[RouteItem] = []
-
-        for idx, (label, variant_opts) in enumerate(route_variants):
-            grid_path = self._run_astar(
-                (start_row, start_col),
-                (goal_row, goal_col),
-                variant_opts,
-                slope_grid,
-                hazard_grid,
-            )
-
-            if not grid_path:
-                continue
-
-            path_nodes: List[PathNode] = []
-            slopes_along_path: List[float] = []
-            hazards_along_path: List[float] = []
-            total_dist_meters = 0.0
-
-            prev_lon, prev_lat = None, None
-            for r, c in grid_path:
-                lon, lat = self.terrain_svc.grid_to_geo(r, c)
-                path_nodes.append(PathNode(longitude=lon, latitude=lat, row=r, column=c))
-                
-                if prev_lon is not None and prev_lat is not None:
-                    step_meters = self._haversine_meters(prev_lon, prev_lat, lon, lat)
-                    total_dist_meters += step_meters
-                prev_lon, prev_lat = lon, lat
-
-                if slope_grid is not None:
-                    slopes_along_path.append(float(slope_grid[r, c]))
-                if hazard_grid is not None:
-                    hazards_along_path.append(float(hazard_grid[r, c]))
-
-            # Fallback if path is a single point
-            if total_dist_meters == 0.0 and len(path_nodes) > 1:
-                total_dist_meters = 463.0 * (len(path_nodes) - 1)
-
-            mean_slope = float(np.mean(slopes_along_path)) if slopes_along_path else 0.0
-            max_slope = float(np.max(slopes_along_path)) if slopes_along_path else 0.0
-            mean_hazard = float(np.mean(hazards_along_path)) if hazards_along_path else 0.0
-            max_hazard = float(np.max(hazards_along_path)) if hazards_along_path else 0.0
-
-            # Travel time estimate in minutes
-            est_minutes = (total_dist_meters / ROVER_SPEED_METERS_PER_SEC) / 60.0
-            # Additional penalty for mean slope
-            if mean_slope > 5.0:
-                est_minutes *= (1.0 + (mean_slope - 5.0) * 0.05)
-
-            # Determine risk level
-            if max_slope < 10.0 and max_hazard < 35.0:
-                risk_level = "low"
-            elif max_slope < 20.0 and max_hazard < 65.0:
-                risk_level = "medium"
-            else:
-                risk_level = "high"
-
-            warnings = []
-            if not elev_available:
-                warnings.append("MOLA elevation data is unavailable; route calculated on straight-line grid distance.")
-            if max_slope > 15.0:
-                warnings.append(f"Maximum route slope ({max_slope:.1f}°) exceeds nominal rover cruising limit (15°).")
-            if max_hazard > 60.0:
-                warnings.append(f"Route crosses elevated hazard sector with maximum score {max_hazard:.1f}.")
-
-            routes_out.append(
-                RouteItem(
-                    id=f"route_{uuid.uuid4().hex[:8]}",
-                    label=label,
-                    algorithm="A*",
-                    start=request.start,
-                    goal=request.goal,
-                    path=path_nodes,
-                    distance_meters=round(total_dist_meters, 1),
-                    estimated_travel_time_minutes=round(est_minutes, 1),
-                    mean_slope_degrees=round(mean_slope, 2),
-                    maximum_slope_degrees=round(max_slope, 2),
-                    mean_hazard_score=round(mean_hazard, 1),
-                    maximum_hazard_score=round(max_hazard, 1),
-                    risk_level=risk_level,
-                    data_coverage=RouteDataCoverage(
-                        elevation="available" if elev_available else "unavailable",
-                        hazards="available" if elev_available else "unavailable",
-                    ),
-                    warnings=warnings,
-                    provenance=RouteProvenance(
-                        generated_at=now_iso,
-                        cost_model="distance + slope + hazard proximity (Backend A* fallback implementation)",
-                        limitations=STANDARD_LIMITATIONS,
-                    ),
+        path_res: PathResult,
+        label: str,
+        start_coord: GeoCoordinate,
+        goal_coord: GeoCoordinate,
+        elev_available: bool,
+        now_iso: str,
+    ) -> RouteItem:
+        """Convert Developer C PathResult to API RouteItem adhering to contract."""
+        path_nodes: List[PathNode] = []
+        for wp in path_res.waypoints:
+            lon = wp.lon if wp.lon is not None else start_coord.longitude
+            lat = wp.lat if wp.lat is not None else start_coord.latitude
+            path_nodes.append(
+                PathNode(
+                    longitude=lon,
+                    latitude=lat,
+                    row=wp.grid_y,
+                    column=wp.grid_x,
                 )
             )
 
-        if not routes_out:
+        # Risk level determination based on Developer C risk score and slope
+        if path_res.max_slope_deg < 10.0 and path_res.estimated_risk_score < 35.0:
+            risk_level = "low"
+        elif path_res.max_slope_deg < 20.0 and path_res.estimated_risk_score < 65.0:
+            risk_level = "medium"
+        else:
+            risk_level = "high"
+
+        # Traversal time in minutes (Developer C computes estimated_traverse_time_hr)
+        travel_time_min = path_res.estimated_traverse_time_hr * 60.0
+
+        # Maximum hazard score from waypoints
+        max_hazard = path_res.estimated_risk_score
+        if path_res.waypoints:
+            max_hazard = max(w.risk_score for w in path_res.waypoints)
+
+        return RouteItem(
+            id=f"route_{uuid.uuid4().hex[:8]}",
+            label=label,
+            algorithm="Developer C AlternativeRoutePlanner (A*)",
+            profile=path_res.profile,
+            start=start_coord,
+            goal=goal_coord,
+            path=path_nodes,
+            distance_meters=round(path_res.total_distance_m, 1),
+            estimated_travel_time_minutes=round(travel_time_min, 1),
+            mean_slope_degrees=round(path_res.avg_slope_deg, 2),
+            maximum_slope_degrees=round(path_res.max_slope_deg, 2),
+            mean_hazard_score=round(path_res.estimated_risk_score, 1),
+            maximum_hazard_score=round(max_hazard, 1),
+            risk_level=risk_level,
+            data_coverage=RouteDataCoverage(
+                elevation="available" if elev_available else "unavailable",
+                hazards="available" if elev_available else "unavailable",
+            ),
+            warnings=path_res.warnings,
+            provenance=RouteProvenance(
+                generated_at=now_iso,
+                cost_model=f"Developer C Multi-Profile ({path_res.profile}): distance + slope + hazard standoff",
+                limitations=path_res.limitations or STANDARD_LIMITATIONS,
+            ),
+            risk_score=round(path_res.estimated_risk_score, 1),
+            elevation_gain_m=round(path_res.total_elevation_gain_m, 1),
+            elevation_loss_m=round(path_res.total_elevation_loss_m, 1),
+            total_cost=round(path_res.total_cost, 2),
+            waypoint_count=len(path_res.waypoints),
+        )
+
+    def plan_route(self, request: RoutePlanRequest) -> RoutePlanResponse:
+        """Execute route planning using Developer C's AlternativeRoutePlanner."""
+        now_iso = get_current_utc_iso()
+        req_id = f"route_req_{uuid.uuid4().hex[:12]}"
+
+        # Handle start and goal coordinates
+        # 1. Geographic input (default contract)
+        if request.start is not None and request.goal is not None:
+            self.validate_coordinates(request.start, "Start")
+            self.validate_coordinates(request.goal, "Goal")
+            start_coord = request.start
+            goal_coord = request.goal
+            start_row, start_col = self.terrain_svc.geo_to_grid(start_coord.longitude, start_coord.latitude)
+            goal_row, goal_col = self.terrain_svc.geo_to_grid(goal_coord.longitude, goal_coord.latitude)
+        # 2. Grid input fallback (start_x, start_y, goal_x, goal_y)
+        elif (request.start_x is not None and request.start_y is not None and
+              request.goal_x is not None and request.goal_y is not None):
+            start_col, start_row = request.start_x, request.start_y
+            goal_col, goal_row = request.goal_x, request.goal_y
+            h, w = self.terrain_svc.get_grid_dimensions()
+            if not (0 <= start_col < w and 0 <= start_row < h):
+                raise InvalidRequestException(
+                    message=f"Start grid coordinate ({start_col}, {start_row}) is out of bounds [0..{w-1}, 0..{h-1}]."
+                )
+            if not (0 <= goal_col < w and 0 <= goal_row < h):
+                raise InvalidRequestException(
+                    message=f"Goal grid coordinate ({goal_col}, {goal_row}) is out of bounds [0..{w-1}, 0..{h-1}]."
+                )
+            start_lon, start_lat = self.terrain_svc.grid_to_geo(start_row, start_col)
+            goal_lon, goal_lat = self.terrain_svc.grid_to_geo(goal_row, goal_col)
+            start_coord = GeoCoordinate(longitude=start_lon, latitude=start_lat)
+            goal_coord = GeoCoordinate(longitude=goal_lon, latitude=goal_lat)
+        else:
+            raise InvalidRequestException(
+                message="Start and Goal coordinates are required (either geographic start/goal or grid start_x/y, goal_x/y)."
+            )
+
+        elev_available = self.terrain_svc.is_available
+        if not elev_available or self._planner is None:
+            # Re-attempt planner initialization if terrain service loaded
+            self._init_planner()
+            if not elev_available or self._planner is None:
+                return RoutePlanResponse(
+                    request_id=req_id,
+                    region_id=request.region_id,
+                    status="failed",
+                    routes=[],
+                    message="Elevation terrain dataset is unavailable. Route cannot be planned safely without topography.",
+                )
+
+        opts = request.options or RouteOptions()
+        # Parse profile option
+        profile_str = (opts.profile or "balanced").lower()
+        try:
+            preferred_profile = RouteProfile(profile_str)
+        except ValueError:
+            preferred_profile = RouteProfile.BALANCED
+
+        # Execute Developer C multi-route planning
+        # start and goal in AlternativeRoutePlanner are (col, row) = (x, y)
+        multi_res = self._planner.plan_multi_routes(
+            start=(start_col, start_row),
+            goal=(goal_col, goal_row),
+            allow_diagonal=opts.allow_diagonal,
+            preferred_profile=preferred_profile,
+        )
+
+        primary = multi_res.primary
+        if not primary.found:
+            # Handle blocked or unreachable
+            status_msg_map = {
+                "START_BLOCKED": f"Start coordinate ({start_coord.longitude}, {start_coord.latitude}) is located in impassable terrain.",
+                "GOAL_BLOCKED": f"Goal coordinate ({goal_coord.longitude}, {goal_coord.latitude}) is located in impassable terrain.",
+                "UNREACHABLE": "Destination is unreachable; terrain obstacles block all passable corridors.",
+                "OUT_OF_BOUNDS": "Coordinates are outside the terrain grid boundary.",
+            }
+            msg = status_msg_map.get(primary.status, f"Route planning failed: {primary.message}")
             return RoutePlanResponse(
                 request_id=req_id,
                 region_id=request.region_id,
                 status="failed",
                 routes=[],
-                message="No passable route could be planned within slope and hazard constraints.",
+                message=msg,
             )
+
+        # Build RouteItems for primary and requested alternatives
+        routes_out: List[RouteItem] = []
+
+        primary_item = self._convert_path_result_to_route_item(
+            path_res=primary,
+            label="Primary route",
+            start_coord=start_coord,
+            goal_coord=goal_coord,
+            elev_available=elev_available,
+            now_iso=now_iso,
+        )
+        routes_out.append(primary_item)
+
+        # Include alternative routes up to requested count
+        max_alts = opts.alternatives if opts.alternatives is not None else 2
+        for idx, alt in enumerate(multi_res.alternatives[:max_alts], 1):
+            if alt.found:
+                alt_item = self._convert_path_result_to_route_item(
+                    path_res=alt,
+                    label=f"Alternative route {idx} ({alt.profile})",
+                    start_coord=start_coord,
+                    goal_coord=goal_coord,
+                    elev_available=elev_available,
+                    now_iso=now_iso,
+                )
+                routes_out.append(alt_item)
+
+        # Extract GeoJSON and comparison metrics from Developer C MultiRouteResult
+        geojson_data = multi_res.to_geojson()
+        multi_dict = multi_res.to_dict()
+        comparison = multi_dict.get("comparison")
 
         return RoutePlanResponse(
             request_id=req_id,
@@ -295,6 +288,8 @@ class RouteService:
             status="success",
             routes=routes_out,
             message="Route is a planning estimate and is not guaranteed safe.",
+            geojson=geojson_data,
+            comparison=comparison,
         )
 
 
