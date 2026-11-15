@@ -17,7 +17,7 @@ import {
   MEDASolTimeSeriesResponse
 } from '../types/api';
 
-const API_BASE = '/api';
+const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api';
 
 // Verified NASA Jezero Crater Observations (Perseverance Rover PDS records)
 export const MOCK_OBSERVATIONS: Observation[] = [
