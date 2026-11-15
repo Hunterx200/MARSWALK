@@ -1,0 +1,31 @@
+{
+  "product_id": "MEGT44N000HB.IMG",
+  "source_dataset_id": "MGS-M-MOLA-5-MEGDR-L3-V1.0",
+  "source_label_url": "https://pds-geosciences.wustl.edu/mgs/mgs-m-mola-5-megdr-l3-v1/mgsl_300x/meg128/megt44n000hb.lbl",
+  "source_label_sha256": "bc624a238ba6d71a770a09f959ead96f1c144970fae435b8ca5e26208b42eec5",
+  "source_image_url": "https://pds-geosciences.wustl.edu/mgs/mgs-m-mola-5-megdr-l3-v1/mgsl_300x/meg128/megt44n000hb.img",
+  "http_status": 206,
+  "content_range": "bytes 74603520-76101119/129761280",
+  "byte_offset_start": 74603520,
+  "byte_offset_end": 76101119,
+  "payload_bytes": 1497600,
+  "payload_sha256": "100a70e3a54f4e920b10701b6b98fcae9f4dc966fb506c9c7c57175480cccafa",
+  "extracted_rows": [
+    3238,
+    3302
+  ],
+  "extracted_cols": [
+    9856,
+    9958
+  ],
+  "array_shape": [
+    65,
+    103
+  ],
+  "array_dtype": "int16",
+  "min_elevation_m": -2719,
+  "max_elevation_m": -1537,
+  "mean_elevation_m": -2320.73,
+  "perseverance_site_elevation_m": -2571,
+  "file_sha256": "aa48c8f76fbc0cb151f947b868640f29cce039d9b6ba7a208e4e8773379747e3"
+}
