@@ -1,0 +1,99 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-space-950 text-slate-200 font-sans;
+    margin: 0;
+    padding: 0;
+    height: 100vh;
+    width: 100vw;
+    overflow: hidden;
+  }
+}
+
+/* Custom scrollbars for aerospace panels */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(11, 15, 23, 0.7);
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(55, 71, 104, 0.6);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(215, 93, 54, 0.8);
+}
+
+/* OpenLayers map container styling */
+.ol-viewport {
+  width: 100% !important;
+  height: 100% !important;
+  background-color: #07090e;
+}
+
+.ol-control {
+  background-color: rgba(16, 22, 34, 0.85) !important;
+  border: 1px solid rgba(55, 71, 104, 0.5) !important;
+  border-radius: 4px !important;
+  backdrop-filter: blur(8px);
+}
+
+.ol-control button {
+  background-color: transparent !important;
+  color: #94a3b8 !important;
+  font-weight: bold;
+}
+
+.ol-control button:hover {
+  background-color: rgba(215, 93, 54, 0.3) !important;
+  color: #f1f5f9 !important;
+}
+
+.ol-attribution {
+  background-color: rgba(11, 15, 23, 0.85) !important;
+  color: #94a3b8 !important;
+  font-size: 10px !important;
+  border-radius: 4px !important;
+}
+
+.ol-attribution a {
+  color: #38bdf8 !important;
+  text-decoration: none;
+}
+
+.ol-scale-line {
+  background: rgba(11, 15, 23, 0.85) !important;
+  border: 1px solid rgba(55, 71, 104, 0.5) !important;
+  border-radius: 4px !important;
+  padding: 2px 6px !important;
+}
+
+.ol-scale-line-inner {
+  color: #38bdf8 !important;
+  border-color: #38bdf8 !important;
+  font-family: ui-monospace, monospace !important;
+  font-size: 10px !important;
+}
+
+/* Grid overlay background effect */
+.grid-bg {
+  background-image: 
+    linear-gradient(rgba(55, 71, 104, 0.15) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(55, 71, 104, 0.15) 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+/* Radar scanning line effect */
+@keyframes radar-sweep {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+.radar-sweep {
+  animation: radar-sweep 12s linear infinite;
+}
