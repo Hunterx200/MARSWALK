@@ -154,5 +154,24 @@ class TestAStarPlanner(unittest.TestCase):
         self.assertTrue(any(y != 2 for y in y_coords_in_middle))
 
 
+    def test_start_blocked_by_slope_limit(self) -> None:
+        """Verify that start cell exceeding max_slope_deg returns START_BLOCKED."""
+        cost_grid = np.ones((2, 2), dtype=float)
+        slope_grid = np.array([[30.0, 0.0], [0.0, 0.0]])
+        planner = AStarPlanner(cost_grid, slope_grid=slope_grid, resolution_m=self.resolution_m)
+        res = planner.plan(start=(0, 0), goal=(1, 0), max_slope_deg=20.0)
+        self.assertFalse(res.found)
+        self.assertEqual(res.status, "START_BLOCKED")
+
+    def test_corner_cutting_prevented_by_slope_limit(self) -> None:
+        """Verify corner cutting prevention when adjacent orthogonal cells exceed slope limit."""
+        cost_grid = np.ones((2, 2), dtype=float)
+        slope_grid = np.array([[0.0, 30.0], [30.0, 0.0]])
+        planner = AStarPlanner(cost_grid, slope_grid=slope_grid, resolution_m=self.resolution_m, prevent_corner_cutting=True)
+        res = planner.plan(start=(0, 0), goal=(1, 1), max_slope_deg=20.0)
+        self.assertFalse(res.found)
+        self.assertEqual(res.status, "UNREACHABLE")
+
+
 if __name__ == "__main__":
     unittest.main()

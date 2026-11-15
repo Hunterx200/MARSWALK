@@ -446,7 +446,7 @@ export const MarsMap: React.FC<MarsMapProps> = ({
 
               <div className="p-2 rounded bg-space-850/80 border border-space-700 font-mono text-[11px] space-y-1">
                 <div className="text-slate-400">Feature: <span className="text-slate-200">{selectedFeature.data.feature_type}</span></div>
-                <div className="text-slate-400">Elevation: <span className="text-slate-200">{selectedFeature.data.elevation_m} m</span></div>
+                <div className="text-slate-400">Elevation: <span className="text-slate-200">{selectedFeature.data.elevation_m != null ? `${selectedFeature.data.elevation_m} m` : 'Unknown'}</span></div>
                 {selectedFeature.data.sample_tube_id && (
                   <div className="text-slate-400">Sample Tube: <span className="text-emerald-400 font-bold">{selectedFeature.data.sample_tube_id}</span></div>
                 )}
@@ -455,11 +455,15 @@ export const MarsMap: React.FC<MarsMapProps> = ({
               <div>
                 <span className="text-slate-400 font-semibold">Science Instruments:</span>
                 <div className="flex flex-wrap gap-1 mt-1">
-                  {(selectedFeature.data.instruments || []).map((inst: string) => (
-                    <span key={inst} className="px-1.5 py-0.5 rounded bg-space-750 text-slate-300 text-[10px] font-mono border border-space-700">
-                      {inst}
-                    </span>
-                  ))}
+                  {(selectedFeature.data.instruments || []).length > 0 ? (
+                    (selectedFeature.data.instruments || []).map((inst: string) => (
+                      <span key={inst} className="px-1.5 py-0.5 rounded bg-space-750 text-slate-300 text-[10px] font-mono border border-space-700">
+                        {inst}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-slate-500 text-[10px] font-mono">None listed</span>
+                  )}
                 </div>
               </div>
 

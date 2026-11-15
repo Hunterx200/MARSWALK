@@ -109,7 +109,9 @@ class NasaTrekService:
                 }
                 
                 # Find ResourceURL template
-                resource_url_elem = root.find(".//wmts:ResourceURL", ns) or root.find(".//ResourceURL")
+                resource_url_elem = root.find(".//wmts:ResourceURL", ns)
+                if resource_url_elem is None:
+                    resource_url_elem = root.find(".//ResourceURL")
                 template_url = None
                 format_ext = "image/jpeg"
                 if resource_url_elem is not None:

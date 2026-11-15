@@ -201,6 +201,16 @@ class AStarPlanner:
                 execution_time_ms=(time.perf_counter() - start_time) * 1000.0,
             )
 
+        if max_slope_deg is not None and self.slope_grid is not None:
+            if self.slope_grid[start_y, start_x] > max_slope_deg:
+                return PathResult(
+                    found=False,
+                    status="START_BLOCKED",
+                    message=f"Start cell ({start_x}, {start_y}) slope ({self.slope_grid[start_y, start_x]:.1f}°) exceeds max slope limit ({max_slope_deg:.1f}°).",
+                    profile=profile_name,
+                    execution_time_ms=(time.perf_counter() - start_time) * 1000.0,
+                )
+
         if not self.is_passable(goal_x, goal_y):
             reason = self._diagnose_impassable_reason(goal_x, goal_y)
             return PathResult(
@@ -210,6 +220,16 @@ class AStarPlanner:
                 profile=profile_name,
                 execution_time_ms=(time.perf_counter() - start_time) * 1000.0,
             )
+
+        if max_slope_deg is not None and self.slope_grid is not None:
+            if self.slope_grid[goal_y, goal_x] > max_slope_deg:
+                return PathResult(
+                    found=False,
+                    status="GOAL_BLOCKED",
+                    message=f"Goal cell ({goal_x}, {goal_y}) slope ({self.slope_grid[goal_y, goal_x]:.1f}°) exceeds max slope limit ({max_slope_deg:.1f}°).",
+                    profile=profile_name,
+                    execution_time_ms=(time.perf_counter() - start_time) * 1000.0,
+                )
 
         # 4. A* Search Data Structures
         directions = self.DIRECTIONS_8 if self.allow_diagonal else self.DIRECTIONS_4
@@ -273,6 +293,11 @@ class AStarPlanner:
                 if self.prevent_corner_cutting and dx != 0 and dy != 0:
                     adj1_passable = self.is_passable(curr_x + dx, curr_y)
                     adj2_passable = self.is_passable(curr_x, curr_y + dy)
+                    if max_slope_deg is not None and self.slope_grid is not None:
+                        if adj1_passable and self.slope_grid[curr_y, curr_x + dx] > max_slope_deg:
+                            adj1_passable = False
+                        if adj2_passable and self.slope_grid[curr_y + dy, curr_x] > max_slope_deg:
+                            adj2_passable = False
                     if not (adj1_passable and adj2_passable):
                         continue
 

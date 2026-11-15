@@ -162,11 +162,21 @@ class TerrainService:
                     retrieved_at=now_iso,
                     limitations=MOLA_TERRAIN_LIMITATIONS + ["Elevation dataset is currently offline or unavailable."],
                 ),
+                min_elevation_m=None,
+                max_elevation_m=None,
+                mean_slope_deg=None,
+                max_slope_deg=None,
+                roughness_index=None,
+                data_coverage_percent=0.0,
             )
 
         # Elevation and slope values as list of lists (rounded to 1 decimal place)
         elev_list = np.round(self._elevation, 1).tolist()
         slope_list = np.round(self._slope, 2).tolist()
+        min_elev = round(float(np.min(self._elevation)), 1)
+        max_elev = round(float(np.max(self._elevation)), 1)
+        mean_slope = round(float(np.mean(self._slope)), 2)
+        max_slope = round(float(np.max(self._slope)), 2)
 
         return TerrainResponse(
             region_id=region_id,
@@ -196,6 +206,13 @@ class TerrainService:
                 retrieved_at=now_iso,
                 limitations=MOLA_TERRAIN_LIMITATIONS,
             ),
+            sample_resolution_m=463.0,
+            min_elevation_m=min_elev,
+            max_elevation_m=max_elev,
+            mean_slope_deg=mean_slope,
+            max_slope_deg=max_slope,
+            roughness_index=None,
+            data_coverage_percent=100.0,
         )
 
 

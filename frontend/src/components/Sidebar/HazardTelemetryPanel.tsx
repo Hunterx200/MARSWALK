@@ -69,11 +69,20 @@ export const HazardTelemetryPanel: React.FC<HazardTelemetryPanelProps> = ({
         {filteredHazards.map(haz => (
           <div
             key={haz.id}
+            role="button"
+            tabIndex={0}
             onClick={() => {
               onSelectHazard(haz);
               controller.panTo(haz.lon ?? 77.4395, haz.lat ?? 18.4447, 14);
             }}
-            className="p-3 rounded-xl bg-space-850 hover:bg-space-800 border border-space-700/80 hover:border-space-600 transition-all cursor-pointer group"
+            onKeyDown={e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onSelectHazard(haz);
+                controller.panTo(haz.lon ?? 77.4395, haz.lat ?? 18.4447, 14);
+              }
+            }}
+            className="p-3 rounded-xl bg-space-850 hover:bg-space-800 border border-space-700/80 hover:border-space-600 transition-all cursor-pointer group focus:outline-none focus:ring-1 focus:ring-rose-500/50"
           >
             <div className="flex items-start justify-between">
               <div>

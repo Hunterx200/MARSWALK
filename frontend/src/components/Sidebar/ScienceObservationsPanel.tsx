@@ -57,11 +57,20 @@ export const ScienceObservationsPanel: React.FC<ScienceObservationsPanelProps> =
         {filteredObservations.map(obs => (
           <div
             key={obs.id}
+            role="button"
+            tabIndex={0}
             onClick={() => {
               onSelectObservation(obs);
               controller.panTo(obs.lon ?? 77.4508, obs.lat ?? 18.4447, 14.5);
             }}
-            className="p-3 rounded-xl bg-space-850 hover:bg-space-800 border border-space-700/80 hover:border-space-600 transition-all cursor-pointer group"
+            onKeyDown={e => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onSelectObservation(obs);
+                controller.panTo(obs.lon ?? 77.4508, obs.lat ?? 18.4447, 14.5);
+              }
+            }}
+            className="p-3 rounded-xl bg-space-850 hover:bg-space-800 border border-space-700/80 hover:border-space-600 transition-all cursor-pointer group focus:outline-none focus:ring-1 focus:ring-telemetry-cyan/50"
           >
             <div className="flex items-start justify-between">
               <div>
@@ -69,7 +78,7 @@ export const ScienceObservationsPanel: React.FC<ScienceObservationsPanelProps> =
                   {obs.target_name || 'Science Target'}
                 </h4>
                 <div className="text-[10px] font-mono text-slate-400 mt-0.5">
-                  {(obs.lat ?? 18.4447).toFixed(4)}°N, {(obs.lon ?? 77.4508).toFixed(4)}°E &bull; Elev {obs.elevation_m ?? -2520}m
+                  {(obs.lat ?? 18.4447).toFixed(4)}°N, {(obs.lon ?? 77.4508).toFixed(4)}°E &bull; Elev {obs.elevation_m != null ? `${obs.elevation_m}m` : 'Unknown'}
                 </div>
               </div>
 

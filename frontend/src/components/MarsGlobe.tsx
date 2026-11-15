@@ -206,6 +206,7 @@ export const MarsGlobe: React.FC<MarsGlobeProps> = ({
   onToggleViewMode,
 }) => {
   const mountRef = useRef<HTMLDivElement>(null);
+  const canvasContainerRef = useRef<HTMLDivElement>(null);
 
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -250,8 +251,8 @@ export const MarsGlobe: React.FC<MarsGlobeProps> = ({
 
   // Initialize Three.js Scene, Camera, High-Visibility Lighting, and Mars Sphere
   useEffect(() => {
-    if (!mountRef.current) return;
-    const container = mountRef.current;
+    if (!canvasContainerRef.current) return;
+    const container = canvasContainerRef.current;
     const width = container.clientWidth;
     const height = container.clientHeight;
 
@@ -820,6 +821,9 @@ export const MarsGlobe: React.FC<MarsGlobeProps> = ({
         background: 'radial-gradient(ellipse at 50% 50%, #150906 0%, #080302 60%, #030101 100%)',
       }}
     >
+      {/* Dedicated Three.js canvas mount container */}
+      <div ref={canvasContainerRef} className="absolute inset-0 pointer-events-none" />
+
       {/* View Mode Switcher: 3D Globe vs 2D Flat Map (Top Center) */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex items-center p-1 rounded-xl bg-space-900/90 backdrop-blur-md border border-space-700/80 shadow-2xl">
         <button
@@ -1068,7 +1072,7 @@ export const MarsGlobe: React.FC<MarsGlobeProps> = ({
                 Coordinates: <span className="text-slate-200">{selectedFeature.data.lat}°N, {selectedFeature.data.lon}°E</span>
               </div>
               <div className="text-slate-400 text-[11px]">
-                Slope: <span className="text-amber-400 font-bold">{selectedFeature.data.slope_deg}°</span> &bull; Elev: <span className="text-slate-200">{selectedFeature.data.elevation_m}m</span>
+                Slope: <span className="text-amber-400 font-bold">{selectedFeature.data.slope_deg}°</span> &bull; Elev: <span className="text-slate-200">{selectedFeature.data.elevation_m != null ? `${selectedFeature.data.elevation_m}m` : 'Unknown'}</span>
               </div>
             </div>
           )}

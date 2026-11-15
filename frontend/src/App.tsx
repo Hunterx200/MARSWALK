@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { MarsMapController } from './services/mapManager';
 import { MarswalkApiClient } from './services/apiClient';
 import { 
@@ -65,6 +65,34 @@ export const App: React.FC = () => {
   const [selectionMode, setSelectionMode] = useState<'inspect' | 'start' | 'goal'>('inspect');
   const [selectedFeature, setSelectedFeature] = useState<any | null>(null);
   const [viewMode, setViewMode] = useState<'globe' | 'map'>('globe');
+  const routeRequestIdRef = useRef<number>(0);
+
+  const activeReportRoute = useMemo<RoutePlanResponse | null>(() => {
+    if (!plannedRoute) return null;
+    if (activeAlternativeId === 'primary' || !plannedRoute.alternatives) {
+      return plannedRoute;
+    }
+    const alt = plannedRoute.alternatives.find(a => a.id === activeAlternativeId);
+    if (!alt) return plannedRoute;
+    const cat: 'LOW' | 'MEDIUM' | 'HIGH' =
+      alt.risk_category === 'HIGH' || alt.risk_category === 'MEDIUM' ? alt.risk_category : 'LOW';
+    return {
+      ...plannedRoute,
+      route_id: alt.id,
+      profile: alt.profile,
+      summary: {
+        total_distance_m: alt.distance_m,
+        estimated_duration_sols: alt.duration_sols,
+        max_slope_deg: alt.max_slope_deg,
+        avg_slope_deg: alt.avg_slope_deg,
+        overall_risk_score: alt.risk_score,
+        risk_category: cat,
+        energy_budget_kwh: alt.energy_budget_kwh ?? plannedRoute.summary?.energy_budget_kwh,
+      },
+      waypoints: alt.waypoints || plannedRoute.waypoints,
+      path_coordinates: alt.path_coordinates || plannedRoute.path_coordinates,
+    };
+  }, [plannedRoute, activeAlternativeId]);
 
   const handleToggleViewMode = useCallback((mode: 'globe' | 'map') => {
     setViewMode(mode);
@@ -119,6 +147,7 @@ export const App: React.FC = () => {
       controller.setMissionPins(startPoint, goalPoint);
 
       // Pre-compute initial route for immediate demonstration
+      const startupReqId = ++routeRequestIdRef.current;
       try {
         const initialPlan = await MarswalkApiClient.planRoute({
           start: startPoint,
@@ -127,6 +156,9 @@ export const App: React.FC = () => {
           max_slope_deg: 15.0,
           avoid_sand_dunes: true,
         });
+        if (startupReqId !== routeRequestIdRef.current) {
+          return; // Discard stale startup response if newer request launched
+        }
         setPlannedRoute(initialPlan);
         setActiveWaypoints(initialPlan.waypoints || []);
         setActiveAlternativeId('primary');
@@ -139,7 +171,9 @@ export const App: React.FC = () => {
           initialPlan.profile || 'balanced'
         );
       } catch (err) {
-        console.error('Failed to pre-compute initial route:', err);
+        if (startupReqId === routeRequestIdRef.current) {
+          console.error('Failed to pre-compute initial route:', err);
+        }
       }
     };
 
@@ -156,8 +190,17 @@ export const App: React.FC = () => {
     };
   }, [controller]);
 
+  const clearPlannedRoute = useCallback(() => {
+    routeRequestIdRef.current++;
+    setPlannedRoute(null);
+    setActiveWaypoints([]);
+    setActiveAlternativeId('primary');
+    controller.setPlannedRoute([], [], [], 'primary', 'balanced');
+  }, [controller]);
+
   // Handle setting start / goal from map click
   const handleSelectCoordinate = useCallback((type: 'start' | 'goal', lat: number, lon: number, name?: string) => {
+    clearPlannedRoute();
     if (type === 'start') {
       const newPt = { lat, lon, name: name || `Custom Site (${lat}°, ${lon}°)` };
       setStartPoint(newPt);
@@ -167,7 +210,17 @@ export const App: React.FC = () => {
       setGoalPoint(newPt);
       controller.setMissionPins(startPoint, newPt);
     }
-  }, [controller, goalPoint, startPoint]);
+  }, [controller, goalPoint, startPoint, clearPlannedRoute]);
+
+  const handleSetStartPoint = useCallback((pt: { lat: number; lon: number; name?: string } | ((prev: { lat: number; lon: number; name?: string }) => { lat: number; lon: number; name?: string })) => {
+    clearPlannedRoute();
+    setStartPoint(pt);
+  }, [clearPlannedRoute]);
+
+  const handleSetGoalPoint = useCallback((pt: { lat: number; lon: number; name?: string } | ((prev: { lat: number; lon: number; name?: string }) => { lat: number; lon: number; name?: string })) => {
+    clearPlannedRoute();
+    setGoalPoint(pt);
+  }, [clearPlannedRoute]);
 
   const handleToggleLayer = (layerId: string) => {
     setLayers(prev =>
@@ -368,11 +421,12 @@ export const App: React.FC = () => {
               <RoutePlannerPanel
                 controller={controller}
                 startPoint={startPoint}
-                setStartPoint={setStartPoint}
+                setStartPoint={handleSetStartPoint}
                 goalPoint={goalPoint}
-                setGoalPoint={setGoalPoint}
+                setGoalPoint={handleSetGoalPoint}
                 plannedRoute={plannedRoute}
                 setPlannedRoute={route => {
+                  routeRequestIdRef.current++;
                   setPlannedRoute(route);
                   if (route?.waypoints) {
                     setActiveWaypoints(route.waypoints);
@@ -443,7 +497,7 @@ export const App: React.FC = () => {
       <MissionReportModal
         isOpen={isReportOpen}
         onClose={() => setIsReportOpen(false)}
-        plannedRoute={plannedRoute}
+        plannedRoute={activeReportRoute}
         observations={observations}
         hazards={hazards}
         startPoint={startPoint}

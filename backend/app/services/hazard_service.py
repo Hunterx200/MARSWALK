@@ -2,7 +2,7 @@
 import numpy as np
 from typing import Optional
 
-from app.core.provenance import get_current_utc_iso, HAZARD_LIMITATIONS
+from app.core.provenance import get_current_utc_iso, HAZARD_LIMITATIONS, DEMO_OBSERVATION_LIMITATION
 from app.schemas.hazard import (
     HazardScoreData,
     HazardType,
@@ -77,7 +77,7 @@ class HazardService:
                 "description": "Deep unconsolidated basaltic sand dunes with ripple spacing 1.5m-3m. High risk of rover wheel embedment.",
                 "mobility_risk": "Wheel entrapment / excessive slip (>60%)",
                 "mitigation_protocol": "Mandatory 80m standoff perimeter buffer. Traverse along eastern bedrock corridor only.",
-                "source_provenance": "MGS MOLA & Perseverance AutoNav slip logs"
+                "source_provenance": DEMO_OBSERVATION_LIMITATION
             },
             {
                 "id": "haz_jezero_002",

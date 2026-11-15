@@ -41,12 +41,6 @@ class ObservationItem(BaseModel):
                 data["lon"] = data["longitude"]
             if "type" in data and "feature_type" not in data:
                 data["feature_type"] = "landing_site" if "landing" in data.get("title", "").lower() else "science_target"
-            if "scientific_value" not in data:
-                data["scientific_value"] = "HIGH"
-            if "elevation_m" not in data:
-                data["elevation_m"] = -2520.0
-            if "instruments" not in data:
-                data["instruments"] = ["Mastcam-Z", "SuperCam", "PIXL"]
         return data
 
 

@@ -47,6 +47,9 @@ export const EnvironmentalIntelligencePanel: React.FC = () => {
     let isCancelled = false;
     setLoading(true);
     setError(null);
+    setTelemetry(null);
+    setSummary(null);
+    setTimeseries(null);
 
     Promise.all([
       MarswalkApiClient.getMedaTelemetry(selectedSol),
@@ -57,6 +60,9 @@ export const EnvironmentalIntelligencePanel: React.FC = () => {
         if (isCancelled) return;
         if (!telemData) {
           setError(`Failed to retrieve MEDA telemetry for Sol ${selectedSol} from backend.`);
+          setTelemetry(null);
+          setSummary(null);
+          setTimeseries(null);
         } else {
           setTelemetry(telemData);
           setSummary(summaryData);
@@ -67,6 +73,9 @@ export const EnvironmentalIntelligencePanel: React.FC = () => {
       .catch((err) => {
         if (isCancelled) return;
         setError(err?.message || 'Error connecting to MEDA Environmental service.');
+        setTelemetry(null);
+        setSummary(null);
+        setTimeseries(null);
         setLoading(false);
       });
 

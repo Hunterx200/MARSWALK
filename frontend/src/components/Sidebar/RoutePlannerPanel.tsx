@@ -99,6 +99,12 @@ export const RoutePlannerPanel: React.FC<RoutePlannerPanelProps> = ({
     }
   }, [plannedRoute, profile, startPoint.name, goalPoint.name]);
 
+  // Invalidate any in-flight planning requests if mission inputs change while planning
+  useEffect(() => {
+    planRequestIdRef.current++;
+    setIsPlanning(false);
+  }, [startPoint, goalPoint, profile, maxSlope, avoidDunes]);
+
   const handleSelectRoute = (routeId: string, currentPlan: RoutePlanResponse | null = plannedRoute) => {
     if (!currentPlan) return;
     setActiveAlternativeId(routeId);
@@ -547,8 +553,16 @@ export const RoutePlannerPanel: React.FC<RoutePlannerPanelProps> = ({
               return (
                 <div
                   key="card_primary"
+                  role="button"
+                  tabIndex={0}
                   onClick={() => handleSelectRoute('primary')}
-                  className={`p-3 rounded-xl border transition-all cursor-pointer font-mono ${
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleSelectRoute('primary');
+                    }
+                  }}
+                  className={`p-3 rounded-xl border transition-all cursor-pointer font-mono focus:outline-none focus:ring-1 focus:ring-cyan-500/50 ${
                     isSelected
                       ? primaryProf === 'direct'
                         ? 'bg-space-850 border-amber-500 shadow-[0_0_15px_rgba(249,115,22,0.25)]'
@@ -666,8 +680,16 @@ export const RoutePlannerPanel: React.FC<RoutePlannerPanelProps> = ({
               return (
                 <div
                   key={alt.id}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => handleSelectRoute(alt.id)}
-                  className={`p-3 rounded-xl border transition-all cursor-pointer font-mono ${
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      handleSelectRoute(alt.id);
+                    }
+                  }}
+                  className={`p-3 rounded-xl border transition-all cursor-pointer font-mono focus:outline-none focus:ring-1 focus:ring-cyan-500/50 ${
                     isSelected
                       ? alt.profile === 'direct'
                         ? 'bg-space-850 border-amber-500 shadow-[0_0_15px_rgba(249,115,22,0.25)]'
@@ -920,11 +942,20 @@ export const RoutePlannerPanel: React.FC<RoutePlannerPanelProps> = ({
               {activeWaypoints.map(wp => (
                 <div
                   key={wp.index}
+                  role="button"
+                  tabIndex={0}
                   onClick={() => {
                     onSelectWaypoint(wp);
                     controller.panTo(wp.lon, wp.lat, 14);
                   }}
-                  className="p-2 rounded bg-space-900 hover:bg-space-800 border border-space-750 flex items-center justify-between cursor-pointer transition-all"
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      onSelectWaypoint(wp);
+                      controller.panTo(wp.lon, wp.lat, 14);
+                    }
+                  }}
+                  className="p-2 rounded bg-space-900 hover:bg-space-800 border border-space-750 flex items-center justify-between cursor-pointer transition-all focus:outline-none focus:ring-1 focus:ring-cyan-500/50"
                 >
                   <div className="flex items-center space-x-2">
                     <span className="w-5 h-5 rounded-full bg-space-750 flex items-center justify-center text-[10px] text-slate-300 font-bold">

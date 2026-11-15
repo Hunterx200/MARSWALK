@@ -100,13 +100,37 @@ class NasaPdsService:
                             src = h.get("_source", {})
                             obs_id = h.get("_id", "pds_record")
                             uri = src.get("uri", "")
+
+                            # Extract geographic coordinates if available in PDS product metadata
+                            lon = (
+                                src.get("westernmost_longitude")
+                                or src.get("easternmost_longitude")
+                                or src.get("longitude")
+                            )
+                            lat = (
+                                src.get("maximum_latitude")
+                                or src.get("minimum_latitude")
+                                or src.get("latitude")
+                            )
+                            if lon is None or lat is None:
+                                continue
+                            try:
+                                lon_f = float(lon)
+                                lat_f = float(lat)
+                            except (ValueError, TypeError):
+                                continue
+
+                            # Filter strictly by Jezero region bounds
+                            if not (settings.min_lon <= lon_f <= settings.max_lon and settings.min_lat <= lat_f <= settings.max_lat):
+                                continue
+
                             live_items.append(
                                 ObservationItem(
                                     id=f"pds_{obs_id}",
                                     title=f"NASA PDS Atlas Product {obs_id[:12]}",
                                     type="imagery",
-                                    longitude=77.4509,  # Default region center
-                                    latitude=18.4447,
+                                    longitude=round(lon_f, 6),
+                                    latitude=round(lat_f, 6),
                                     sol=None,
                                     acquired_at=None,
                                     source="NASA PDS Imaging Atlas",

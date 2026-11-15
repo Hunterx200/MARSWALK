@@ -51,6 +51,7 @@ class MarswalkAlternativeRoutePlanner(AlternativeRoutePlanner):
         goal: Tuple[int, int],
         allow_diagonal: bool = True,
         preferred_profile: RouteProfile = RouteProfile.BALANCED,
+        max_slope_deg: Optional[float] = None,
     ) -> MultiRouteResult:
         pref_str = (preferred_profile.value if hasattr(preferred_profile, "value") else str(preferred_profile)).lower()
         if pref_str in ("fastest", "direct"):
@@ -73,10 +74,17 @@ class MarswalkAlternativeRoutePlanner(AlternativeRoutePlanner):
         h_pen_s = np.where(self.hazard_dist_grid < h_buf_s, 1.0 + 15.0 * ((h_buf_s - self.hazard_dist_grid) / h_buf_s) ** 2, 1.0)
         c_safe = (1.0 + 25.0 * (self.slope_grid / 10.0) ** 2) * h_pen_s
 
+        # Apply hazard and boundary mask as impassable (np.inf) to all profile cost grids
+        if hasattr(self, "hazard_mask") and self.hazard_mask is not None:
+            c_direct[self.hazard_mask] = np.inf
+            c_balanced[self.hazard_mask] = np.inf
+            c_safe[self.hazard_mask] = np.inf
+
+        req_slope = max_slope_deg if max_slope_deg is not None else 25.0
         cost_configs = {
-            "direct": (c_direct, 25.0),
-            "balanced": (c_balanced, 25.0),
-            "safe": (c_safe, 25.0),
+            "direct": (c_direct, min(25.0, req_slope)),
+            "balanced": (c_balanced, min(25.0, req_slope)),
+            "safe": (c_safe, min(20.0, req_slope)),
         }
 
         routes: Dict[str, PathResult] = {}
@@ -110,6 +118,7 @@ class RouteService:
         self.terrain_svc = terrain_svc
         self.hazard_svc = hazard_svc
         self._planner: Optional[AlternativeRoutePlanner] = None
+        self._routes: Dict[str, RouteItem] = {}
         self._init_planner()
 
     def _init_planner(self) -> None:
@@ -260,7 +269,7 @@ class RouteService:
 
         total_distance = round(path_res.total_distance_m + start_snap_dist + goal_snap_dist, 1)
 
-        return RouteItem(
+        route_item = RouteItem(
             id=f"route_{uuid.uuid4().hex[:8]}",
             label=label,
             algorithm="Developer C AlternativeRoutePlanner (A*)",
@@ -297,6 +306,12 @@ class RouteService:
             snapped_goal=snapped_goal or goal_coord,
             goal_snap_distance_m=round(goal_snap_dist, 1),
         )
+        self._routes[route_item.id] = route_item
+        return route_item
+
+    def get_route(self, route_id: str) -> Optional[RouteItem]:
+        """Retrieve a planned route by ID."""
+        return self._routes.get(route_id)
 
     def plan_route(self, request: RoutePlanRequest) -> RoutePlanResponse:
         """Execute route planning using Developer C's AlternativeRoutePlanner."""
@@ -378,6 +393,7 @@ class RouteService:
             goal=(goal_col, goal_row),
             allow_diagonal=opts.allow_diagonal,
             preferred_profile=preferred_profile,
+            max_slope_deg=opts.max_slope_degrees,
         )
 
         primary = multi_res.primary
@@ -487,8 +503,13 @@ class RouteService:
             step_idx += 1
 
         cum_dist = start_snap_dist
-        for wp in primary.waypoints:
-            cum_dist += (463.0 if wp.step_index > 0 else 0.0)
+        for i, wp in enumerate(primary.waypoints):
+            cum_dist = start_snap_dist + wp.cumulative_distance_m
+            seg_dist = (
+                (wp.cumulative_distance_m - primary.waypoints[i - 1].cumulative_distance_m)
+                if i > 0
+                else start_snap_dist
+            )
             frontend_waypoints.append({
                 "index": step_idx,
                 "lat": wp.lat if wp.lat is not None else orig_start.latitude,
@@ -496,7 +517,7 @@ class RouteService:
                 "elevation_m": round(wp.elevation_m, 1) if wp.elevation_m is not None else 0.0,
                 "slope_deg": round(wp.slope_deg, 1) if wp.slope_deg is not None else 0.0,
                 "roughness": round(wp.roughness_m, 2) if wp.roughness_m is not None else 0.2,
-                "segment_distance_m": 463.0 if wp.step_index > 0 else round(start_snap_dist, 1),
+                "segment_distance_m": round(seg_dist, 1),
                 "cumulative_distance_m": round(cum_dist, 1),
                 "estimated_sol": round(cum_dist / 550.0, 1),
                 "risk_level": "HIGH" if (wp.risk_score or 0) > 50 else ("MEDIUM" if (wp.risk_score or 0) > 25 else "LOW"),
@@ -553,12 +574,17 @@ class RouteService:
                             "elevation_m": round(wp.elevation_m or 0.0, 1),
                             "slope_deg": round(wp.slope_deg or 0.0, 1),
                             "roughness": round(wp.roughness_m or 0.2, 2),
-                            "segment_distance_m": 463.0 if wp.step_index > 0 else 0.0,
+                            "segment_distance_m": round(
+                                (wp.cumulative_distance_m - alt.waypoints[w_idx - 1].cumulative_distance_m)
+                                if w_idx > 0
+                                else 0.0,
+                                1,
+                            ),
                             "cumulative_distance_m": round(wp.cumulative_distance_m, 1),
                             "estimated_sol": round(wp.cumulative_distance_m / 500.0, 1),
                             "risk_level": "HIGH" if (wp.risk_score or 0) > 50 else "LOW",
                         }
-                        for wp in alt.waypoints
+                        for w_idx, wp in enumerate(alt.waypoints)
                     ],
                     "path_coordinates": alt_coords,
                     "description": f"Alternative route optimized for {alt.profile} profile.",

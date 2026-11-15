@@ -958,49 +958,12 @@ export class MarswalkApiClient {
         this.setConnectionStatus(true, reqTime);
         return await res.json();
       }
-    } catch {
-      // fallback
+      const errData = await res.json().catch(() => null);
+      throw new Error(errData?.error?.message || errData?.detail || `Failed to save mission (HTTP ${res.status})`);
+    } catch (err: any) {
+      this.setConnectionStatus(false, reqTime);
+      throw err instanceof Error ? err : new Error('Network error: Unable to save mission plan.');
     }
-
-    // Offline / fallback response matching backend schema
-    return {
-      id: `mission_local_${Date.now()}`,
-      name: payload.name,
-      region_id: payload.region_id,
-      route_id: payload.route_id,
-      created_at: new Date().toISOString(),
-      status: 'draft',
-      summary: {
-        distance_meters: 1420.5,
-        risk_level: 'medium',
-        mean_slope_degrees: 6.8,
-        maximum_slope_degrees: 14.2,
-        hazard_score: 28.4,
-        observations: 4,
-      },
-      report: {
-        title: 'MARSWALK Mission Plan',
-        sections: [
-          {
-            title: 'Route overview',
-            content: `Mission '${payload.name}' planned in primary exploration sector ${payload.region_id}. Selected route outlines a nominal traverse with estimated ground distance of 1420.5 meters.`,
-          },
-          {
-            title: 'Terrain and hazards',
-            content: 'Traverse encounters an average gradient of 6.8° with peak slopes of 14.2°. Slopes remain within rover static stability limit (30°), but active wheel slip monitoring is advised.',
-          },
-          {
-            title: 'Scientific context',
-            content: 'The planned route intersects high-priority scientific targets within Jezero Crater, including ancient delta deposits and sample depots.',
-          },
-          {
-            title: 'Limitations',
-            content: 'MARSWALK is a mission-planning and research prototype. Not certified for flight operations or autonomous rover navigation.',
-          },
-        ],
-      },
-      notes: payload.notes,
-    };
   }
 
   /**
