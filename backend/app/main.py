@@ -22,6 +22,7 @@ from app.api import (
     routes_hazards,
     routes_routes,
     routes_missions,
+    routes_environment,
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -59,6 +60,7 @@ app.include_router(routes_terrain.router, prefix="/api")
 app.include_router(routes_hazards.router, prefix="/api")
 app.include_router(routes_routes.router, prefix="/api")
 app.include_router(routes_missions.router, prefix="/api")
+app.include_router(routes_environment.router, prefix="/api")
 
 
 @app.get("/")

@@ -15,6 +15,7 @@ if root_dir not in sys.path:
 
 from algorithms.models import RouteProfile, PathResult, Waypoint, MultiRouteResult
 from algorithms.routing.alternatives import AlternativeRoutePlanner
+from algorithms.routing.astar import AStarPlanner
 
 from app.config import settings
 from app.core.errors import InvalidRequestException
@@ -33,6 +34,73 @@ from app.services.terrain_service import terrain_service
 from app.services.hazard_service import hazard_service
 
 logger = logging.getLogger(__name__)
+
+
+class MarswalkAlternativeRoutePlanner(AlternativeRoutePlanner):
+    """Enhanced multi-profile planner tailored for real MOLA DEM (463m resolution).
+    
+    Generates genuinely distinct physical routes for:
+    - direct (Fastest): Shortest geometric traverse across terrain, minimal slope penalty.
+    - balanced (Balanced): Energy and slope-aware model avoiding steeper slope ridges and moderate hazards.
+    - safe (Safest): Strict slope avoidance (>2.5°) and wide hazard standoff (2200m buffer) avoiding rough terrain.
+    """
+
+    def plan_multi_routes(
+        self,
+        start: Tuple[int, int],
+        goal: Tuple[int, int],
+        allow_diagonal: bool = True,
+        preferred_profile: RouteProfile = RouteProfile.BALANCED,
+    ) -> MultiRouteResult:
+        pref_str = (preferred_profile.value if hasattr(preferred_profile, "value") else str(preferred_profile)).lower()
+        if pref_str in ("fastest", "direct"):
+            pref_key = "direct"
+        elif pref_str in ("safest", "safe"):
+            pref_key = "safe"
+        else:
+            pref_key = "balanced"
+
+        # 1. DIRECT: Pure distance, minimal slope penalty
+        c_direct = 1.0 + 0.1 * (self.slope_grid / 20.0) ** 2
+
+        # 2. BALANCED: Moderate slope penalty + moderate hazard avoidance (~900m = ~2 cells)
+        h_buf_b = 900.0
+        h_pen_b = np.where(self.hazard_dist_grid < h_buf_b, 1.0 + 4.0 * ((h_buf_b - self.hazard_dist_grid) / h_buf_b) ** 2, 1.0)
+        c_balanced = (1.0 + 10.0 * (self.slope_grid / 10.0) ** 2) * h_pen_b
+
+        # 3. SAFE: Strict slope penalty (penalizing slopes > 2.5°) + wide hazard buffer (~2200m = ~5 cells)
+        h_buf_s = 2200.0
+        h_pen_s = np.where(self.hazard_dist_grid < h_buf_s, 1.0 + 15.0 * ((h_buf_s - self.hazard_dist_grid) / h_buf_s) ** 2, 1.0)
+        c_safe = (1.0 + 25.0 * (self.slope_grid / 10.0) ** 2) * h_pen_s
+
+        cost_configs = {
+            "direct": (c_direct, 25.0),
+            "balanced": (c_balanced, 25.0),
+            "safe": (c_safe, 25.0),
+        }
+
+        routes: Dict[str, PathResult] = {}
+        for p_name, (c_grid, max_s) in cost_configs.items():
+            planner = AStarPlanner(
+                cost_grid=c_grid,
+                resolution_m=self.resolution_m,
+                elevation_grid=self.dem,
+                slope_grid=self.slope_grid,
+                roughness_grid=self.roughness_grid,
+                hazard_dist_grid=self.hazard_dist_grid,
+                risk_grid=self.standard_risk_grid,
+                allow_diagonal=allow_diagonal,
+                prevent_corner_cutting=True,
+                coord_transformer=self.coord_transformer,
+            )
+            res = planner.plan(start=start, goal=goal, profile_name=p_name, max_slope_deg=max_s)
+            routes[p_name] = res
+
+        primary_route = routes.get(pref_key, routes["balanced"])
+        other_keys = [k for k in ("balanced", "direct", "safe") if k != pref_key]
+        alternatives = [routes[k] for k in other_keys if k in routes]
+
+        return MultiRouteResult(primary=primary_route, alternatives=alternatives)
 
 
 class RouteService:
@@ -81,13 +149,13 @@ class RouteService:
             return round(float(lon), 6), round(float(lat), 6)
 
         try:
-            self._planner = AlternativeRoutePlanner(
+            self._planner = MarswalkAlternativeRoutePlanner(
                 dem=dem,
                 hazard_mask=hazard_mask,
                 resolution_m=resolution_m,
                 coord_transformer=grid_to_mars,
             )
-            logger.info(f"Initialized Developer C AlternativeRoutePlanner with DEM shape {dem.shape} and {hazard_mask.sum()} hazard cells.")
+            logger.info(f"Initialized MarswalkAlternativeRoutePlanner with DEM shape {dem.shape} and {hazard_mask.sum()} hazard cells.")
         except Exception as e:
             logger.error(f"Failed to initialize AlternativeRoutePlanner: {e}")
             self._planner = None
@@ -294,11 +362,13 @@ class RouteService:
                 )
 
         opts = request.options or RouteOptions()
-        # Parse profile option
-        profile_str = (opts.profile or "balanced").lower()
-        try:
-            preferred_profile = RouteProfile(profile_str)
-        except ValueError:
+        # Parse profile option (support direct/fastest, safe/safest, balanced)
+        profile_str = (opts.profile or request.profile or "balanced").lower()
+        if profile_str in ("fastest", "direct"):
+            preferred_profile = RouteProfile.DIRECT
+        elif profile_str in ("safest", "safe"):
+            preferred_profile = RouteProfile.SAFE
+        else:
             preferred_profile = RouteProfile.BALANCED
 
         # Execute Developer C multi-route planning
